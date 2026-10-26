@@ -1,0 +1,44 @@
+来源与改写范围
+
+公开仓库：lixiaoxiao9888-create/manju-laoli-skill
+来源版本：V7.4.26
+审查快照提交：6f16955c57053d77ea0ffbdbbf3a7985a3e0080a
+本地改写日期：2026-10-26
+
+吸收动作因果、可观察画风变量与面部动作词汇，按 drama 当前阶段职责改写。
+不继承来源总控、强制配额、模型规格或未经复测的效果承诺。
+本通知随独立技能保留；不表示来源作者认可此改写。
+
+参考文件及本地来源字节摘要：
+sd-real-engine/references/kinetic-chain-11.md
+SHA256 5a0bda96dde26425f1324db10347adbcdc79a6b22fcfea38d4dec1081bb81e36
+
+sd-xuanhuan-engine/references/core-combat-laws.md
+SHA256 dfef07c459b9770b7e57fffa302e711fea9443afbb901ad274b3beb5c2b5f306
+
+sd-combat-engine/references/combat-construction.md
+SHA256 1c2acc965efb1bdab0fdd4bba250f8d67b1da0de7d056b7e38dd539c4af0af77
+
+以下保留来源许可：
+
+MIT License
+
+Copyright (c) 2026 Short-Drama Director Suite contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
