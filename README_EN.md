@@ -398,12 +398,17 @@ See the [Comic-drama workflow guide](docs/comic-drama-workflow.md) (Chinese).
 
 ### What do I do after upgrading?
 
-Run the same install command again; for an existing project, run `creator_markdown_check.py` once per episode, where
-tightened rules surface (for example, since v0.7.0 a character or prop named in a storyboard "source" quotation but
-missing from its visual basis and not declared off-screen is reported, and a video prompt whose duration differs from
-its shot is reported); the upgrade notes in [CHANGELOG.md](CHANGELOG.md) say how to fix the tightened document rules.
-For episodes you have cut, run `edit_tool.py check` too: since v0.7.1 every unused shot must be listed with its own
-ID and reason, and a range such as "001 to 009" is no longer accepted.
+Run the same install command again. Since v0.9.0, the five Markdown documents are the only per-episode creative
+source of truth, and the old structured authoring templates are no longer shipped. Since v0.9.1, the legacy
+JSON/JSONL checkers are also retired; structural checks use `creator_markdown_check.py`.
+
+For an existing project, run `creator_markdown_check.py` once per episode. Add `--partial` while only some of the
+five documents exist, then run the full check once all five are present. Tightened rules surface there, such as a
+character or prop named in a storyboard "source" quotation but missing from its visual basis and not declared
+off-screen, or a video prompt whose duration differs from its shot. The upgrade notes in
+[CHANGELOG.md](CHANGELOG.md) explain the fixes and version differences. For episodes you have cut, run
+`edit_tool.py check` too: since v0.7.1 every unused shot must be listed with its own ID and reason, and a range
+such as "001 to 009" is no longer accepted.
 
 ## Further reading
 
