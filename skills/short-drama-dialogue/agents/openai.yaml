@@ -1,0 +1,4 @@
+interface:
+  display_name: "短剧台词专项"
+  short_description: "重写有压力、有声音、能表演的中文短剧场景台词"
+  default_prompt: "使用 $short-drama-dialogue 对我点名的短剧台词做专项重写；保留既有剧情与场景结果，只交可替换的台词片段和必要改动依据。"

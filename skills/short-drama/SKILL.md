@@ -23,6 +23,7 @@ license: MIT
 | 分析长篇原著 | `$short-drama-novel-analyze`，仅在用户需要时 |
 | 选择或变更画风、比较代表帧 | 本技能按 Look Development 明确可观察选择，再交视觉设定与图片提示词 owner 落实；已有接受方向直接继承 |
 | 写或改单集剧本 | `$short-drama-write` → `剧本.md` |
+| 只改一场交锋、几句台词或人物声音 | `$short-drama-dialogue` → 局部台词修订稿；需要写回项目时交 `$short-drama-write` |
 | 拆人物、造型、地点、道具 | `$short-drama-assets` → `视觉设定.md` |
 | 写资产图片提示词 | `$short-drama-image-prompts` → `图片提示词.md` |
 | 做镜头和冻结关键帧 | `$short-drama-storyboard` → `分镜.md` |

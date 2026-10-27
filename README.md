@@ -5,7 +5,7 @@
 <h1 align="center">Drama Skills</h1>
 
 <p align="center">
-  <b>面向编剧、漫剧工作室和编导的 AI 短剧创作工作流：十一个技能，从一个点子或一部原著做到分集剧本、分镜、图片/视频提示词和成片。</b>
+  <b>面向编剧、漫剧工作室和编导的 AI 短剧创作工作流：十二个技能，从一个点子或一部原著做到台词、分集剧本、分镜、图片/视频提示词和成片。</b>
 </p>
 
 <p align="center">
@@ -21,7 +21,7 @@
 <p align="center">
   <a href="https://github.com/zenstory-ai/drama-skills/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/zenstory-ai/drama-skills?style=flat-square&color=22D3EE&logo=github&logoColor=white&label=Stars"></a>
   <a href="https://github.com/zenstory-ai/drama-skills/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/zenstory-ai/drama-skills?style=flat-square&color=081431&label=Release"></a>
-  <img alt="Skills 11" src="https://img.shields.io/badge/Skills-11-081431?style=flat-square">
+  <img alt="Skills 12" src="https://img.shields.io/badge/Skills-12-081431?style=flat-square">
   <a href="https://www.python.org/"><img alt="Python 3.9%2B" src="https://img.shields.io/badge/Python-3.9%2B-3776AB?style=flat-square&logo=python&logoColor=white"></a>
   <a href="https://github.com/zenstory-ai/drama-skills/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/zenstory-ai/drama-skills/ci.yml?style=flat-square&label=CI"></a>
   <a href="./LICENSE"><img alt="License MIT" src="https://img.shields.io/badge/License-MIT-1F6FEB?style=flat-square"></a>
@@ -38,9 +38,9 @@
 
 ## 这是什么
 
-Drama Skills 覆盖 AI 短剧 / 漫剧从点子或原著到成片的全流程：**原著分析 → 分集剧本 → 视觉设定 →
+Drama Skills 覆盖 AI 短剧 / 漫剧从点子或原著到成片的全流程：**原著分析 → 分集剧本 → 台词专项 → 视觉设定 →
 图片提示词与分镜 → 视频提示词 → 确认后生产 → 剪辑成片 → 审查**。
-它以 11 个 skill 的形式装进你已经在用的编程 Agent（Claude Code、Codex 及其他支持 Agent Skill 规范的环境），
+它以 12 个 skill 的形式装进你已经在用的编程 Agent（Claude Code、Codex 及其他支持 Agent Skill 规范的环境），
 写作用的模型就是该 Agent 的模型。
 
 - **五份 Markdown 分别记录创作决定** — 按阶段维护 `剧本.md`、`视觉设定.md`、`分镜.md`、`图片提示词.md`、
@@ -134,6 +134,9 @@ ClawHub 分发条目由[显式发布清单](.clawhub/publish.json)管理，可�
 # 2. 写第一集
 用 $short-drama-write 写第 1 集：外卖员在高档餐厅被经理羞辱，亮出集团董事身份
 
+# 只打磨一场台词时，保留剧情与场景结果，只重写交锋
+用 $short-drama-dialogue 重写 EP001 餐厅对峙的台词：经理先赶人，外卖员一直不亮身份，最后只用一个动作压回去；不要改场景结果
+
 # 3. 拆资产，写提示词与分镜（可在同一请求内连续完成）
 用 $short-drama-assets 从第 1 集拆人物/场景/道具
 需要统一视觉语言时，可选用 $short-drama 做 Look Development
@@ -223,7 +226,7 @@ ERROR: SHOT-EP001-002: 冻结关键帧提示词写到人物「周薄森」，视
 ERROR: SHOT-EP001-003: 分镜时长 2 秒与视频提示词 3 秒不一致；视频提示词只能原样照抄已接受的镜头时长
 ```
 
-## 十一个技能
+## 十二个技能
 
 各阶段按请求调用：文本交付在所需阶段完成，审查可针对任一已有产物；静态漫剧从关键帧与配音进入生产和剪辑。
 
@@ -234,6 +237,7 @@ flowchart LR
 
     nva["原著分析<br/>$short-drama-novel-analyze"]:::phase
     dev["故事开发<br/>$short-drama-develop"]:::phase
+    dia["台词专项<br/>$short-drama-dialogue"]:::phase
     write["分集剧本<br/>$short-drama-write"]:::phase
     assets["资产决策<br/>$short-drama-assets"]:::phase
     img["图片提示词<br/>$short-drama-image-prompts"]:::phase
@@ -245,7 +249,10 @@ flowchart LR
     pkg["文本交付包"]:::final
 
     nva -.有原著时.-> dev
-    dev -.可选.-> write --> assets
+    dev -.可选.-> write
+    write -.局部台词.-> dia
+    dia -.修订稿回写.-> write
+    write --> assets
     assets --> img
     assets --> sb --> vid
     img --> prod
@@ -259,6 +266,7 @@ flowchart LR
 | `short-drama-novel-analyze` | 长篇原著的抽样改编快评、章节索引、逐章功能提取、剧情单元与节奏、改编价值与分集候选 |
 | `short-drama-develop` | 小说/长材料的可追溯改编、多集整稿的 Agent 主导切片与续跑、故事引擎、分集地图、导演阐述、题材与钩子手册 |
 | `short-drama-write` | 单集目标、因果节拍、可拍剧本和项目选择的制作稿格式 |
+| `short-drama-dialogue` | 场景台词专项：压力链、人物声音、潜台词、交锋重写与表演回读；只交局部修订稿，不改整集结构 |
 | `short-drama-assets` | 人物/造型、地点/视图、道具/状态、可选的角色声音方向与连续性决策 |
 | `short-drama-image-prompts` | Lookdev 风格帧、角色/场景/道具参考板提示词与定点修改说明 |
 | `short-drama-storyboard` | 可选场次视觉计划与 Coverage Audition、原文落实、镜头、边界和冻结关键帧 |
@@ -349,7 +357,7 @@ macOS、Linux、WSL 与 Windows 原生都可运行。创作台以 `--detach` 独
 - 示例：[examples/](examples/)，公开完整样例是 [《让你管账号》EP001](examples/creator-first/EP001/)；其余目录是仓库校验器的回归夹具。
 - [真实产出节选](docs/real-outputs.md)：一镜穿过四份文档、检查器报错、剪辑单与实测、原著快评回填、改编契约、模型行为观察。
 - [评估](evaluations/README.md)：按文档实跑一次的完整产物、发布前的回归闸门与主工作流实跑方法。
-- [漫剧创作全流程指引](docs/comic-drama-workflow.md)：把十一个技能按漫剧产线从头串一遍，每步命令、产物与卡点。
+- [漫剧创作全流程指引](docs/comic-drama-workflow.md)：把十二个技能按漫剧产线从头串一遍，每步命令、产物与卡点。
 - [跨镜一致性怎么做](docs/character-consistency-across-shots.md)：跨镜、跨集角色一致性，三视图之外的三层文件事实。
 - [小说改短剧指南](https://zenstory.ai/zh/drama-skills/novel-to-short-drama)：从有权改编的原著出发，形成分集决策、单集剧本与小范围分镜交接。
 - [角色跨镜一致性指南](https://zenstory.ai/zh/drama-skills/character-consistency)：分开人物身份、本场造型与逐镜变化的双手、持物、视线；区分 `IMG-*`、`PLAN-*` 与 `REF-*`。

@@ -1,6 +1,6 @@
 # An open-source AI short-drama pipeline: script, assets, storyboard, prompts, then generation
 
-Drama Skills (`zenstory-ai/drama-skills`) is an MIT-licensed set of 11 agent skills for Claude Code and Codex that takes a short drama or motion comic (漫剧) from idea or novel to per-episode script, visual asset sheet, storyboard with frozen keyframes, and copy-ready image and video prompts. The core episode stages write Markdown into `剧集/<EP>/`; media generation runs after the creator explicitly confirms a previewed batch. Optional adapters cover Seedance, GPT Image 2, MiniMax H3 video, MiniMax speech and MiniMax Music.
+Drama Skills (`zenstory-ai/drama-skills`) is an MIT-licensed set of 12 agent skills for Claude Code and Codex that takes a short drama or motion comic (漫剧) from idea or novel to focused dialogue revision, per-episode script, visual asset sheet, storyboard with frozen keyframes, and copy-ready image and video prompts. The core episode stages write Markdown into `剧集/<EP>/`; media generation runs after the creator explicitly confirms a previewed batch. Optional adapters cover Seedance, GPT Image 2, MiniMax H3 video, MiniMax speech and MiniMax Music.
 
 中文全流程：[漫剧创作全流程指引](comic-drama-workflow.md)
 
@@ -14,6 +14,7 @@ idea / novel / existing script
         ├─ novel analysis, story development (both optional)
         ▼
       剧本.md            episode script
+        │  (focused dialogue pass when requested)
         ▼
     视觉设定.md          visual asset sheet: identities, variants, continuity locks
       ├──────────────┐
@@ -27,7 +28,7 @@ idea / novel / existing script
 
 The five core Markdown documents hold each episode's creative decisions. Editing and requested review add their own cut list or findings; they do not replace those source documents.
 
-## The 11 skills
+## The 12 skills
 
 | Skill | Role |
 |---|---|
@@ -35,6 +36,7 @@ The five core Markdown documents hold each episode's creative decisions. Editing
 | `short-drama-novel-analyze` | Read-only analysis of a long novel: chapter index, adaptation value, per-chapter function, episode candidates |
 | `short-drama-develop` | Traceable adaptation plan, story engine, episode map, director's statement, genre and hook playbooks |
 | `short-drama-write` | Shootable per-episode script with causal beats; also normalises an existing script without rewriting it |
+| `short-drama-dialogue` | Focused scene dialogue with pressure chains, distinct voices, subtext, and performance-aware revision; keeps episode structure with the script owner |
 | `short-drama-assets` | Characters and looks, locations and views, props and states, continuity locks |
 | `short-drama-image-prompts` | Lookdev style frames, character/location/prop reference-board prompts |
 | `short-drama-storyboard` | Shot list with dramatic purpose, spatial continuity, frozen keyframe prompts |
