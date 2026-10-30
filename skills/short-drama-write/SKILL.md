@@ -1,6 +1,6 @@
 ---
 name: short-drama-write
-description: 编写或修订可拍摄的中文短剧、漫剧单集 Markdown 剧本，也负责保留作者原文并规范化现成剧本。用户提出“写/改一集短剧”“把大纲写成剧本”“改变剧情或场景结构的整场重写”“去模板感”“去 AI 味润色”“续写下一集”或提供完整剧本要求进入后续制作时使用；已有场景内不改变剧情与场景结构的整场交锋、局部台词或人物声音专项交 $short-drama-dialogue；不负责资产、分镜、媒体提示词或终审。
+description: 编写或修订可拍摄的中文短剧、漫剧单集 Markdown 剧本，也负责保留作者原文并规范化现成剧本。用户提出“写/改一集短剧”“把大纲写成剧本”“优化场景/对白”“去模板感”“去 AI 味润色”“续写下一集”或提供剧本要求进入后续制作时使用；不负责资产、分镜、媒体提示词或终审。
 license: MIT
 ---
 
@@ -20,7 +20,6 @@ license: MIT
 - 有分集规划：读取本集进入状态、目标、转折、回报和交接事实。
 - 只有想法/大纲：在上下文形成最小单集契约和因果节拍，再直接写剧本。
 - 已有剧本：保留作者语言，只做用户点名的定点修订。
-- 只要求重写少量台词、单场交锋或人物声音：交 `$short-drama-dialogue`；若同时要求写回整集，本技能只负责把已确认的局部修订融入 `剧本.md`。
 - 非规范文本要进入制作：保留原文，只做必要的场景、动作、对白和生产标签规范化。
 
 开发大纲和长篇分析都是可选上游；当前材料足够时直接写。
@@ -61,7 +60,7 @@ license: MIT
 - 场景标题、对白和生产标签语法，或把创作者带来的现成剧本[规范化](references/screenplay-format.md#7-现有文本的规范化入口)：[剧本格式](references/screenplay-format.md)
 - 项目特有的制作稿方言：[制作格式方言](references/production-format-dialect.md)
 - 输入含[核心选择](references/script-craft.md#35-把一拍写成艰难选择时两个方向都要活着)、[有限次数/轮次/呼吸/节拍](references/script-craft.md#64-有限单位按完成状态计数)、[精确倒计时](references/script-craft.md#63-倒计时先算动作不要只写数字)或[会改变人物判断的关键物证](references/script-craft.md#53-证据先改变判断再改变关系)：[剧作手艺](references/script-craft.md)
-- 写整集或整场时，过去关系必须通过对白进入，或关键人物容易只剩说明功能：[对白手艺](references/dialogue-craft.md)
+- 过去关系必须通过对白进入，或关键人物容易只剩说明功能：[对白手艺](references/dialogue-craft.md)
 - 声源、留白与 sound bridge：[场景声音戏剧](references/scene-sound-dramaturgy.md)
 - 同一故事义务的不同可拍实现：[可替代实现](references/substitutable-realization.md)
 - 长单集跨上下文时的最小交接：[场景交接摘要](references/scene-handoff-capsule.md)，只留在上下文

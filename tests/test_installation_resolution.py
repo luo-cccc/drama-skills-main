@@ -17,7 +17,6 @@ EXPECTED_SKILLS = {
     "short-drama-novel-analyze",
     "short-drama-develop",
     "short-drama-write",
-    "short-drama-dialogue",
     "short-drama-assets",
     "short-drama-image-prompts",
     "short-drama-storyboard",

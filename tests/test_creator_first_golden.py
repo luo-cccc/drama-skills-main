@@ -26,7 +26,6 @@ EXPECTED = {
 CREATOR_SKILLS = (
     "short-drama",
     "short-drama-write",
-    "short-drama-dialogue",
     "short-drama-assets",
     "short-drama-image-prompts",
     "short-drama-storyboard",
@@ -69,11 +68,6 @@ EXPECTED_KNOWHOW = {
         "stage-contract.md",
         "substitutable-realization.md",
     },
-    "short-drama-dialogue": {
-        "dialogue-direction.md",
-        "dialogue-examples.md",
-        "stage-contract.md",
-    },
     "short-drama-assets": {
         "asset-review-checklist.md",
         "character-and-look.md",
@@ -101,7 +95,6 @@ EXPECTED_KNOWHOW = {
     },
     "short-drama-storyboard": {
         "blocking-playbooks.md",
-        "combat-choreography.md",
         "comic-keyframe-lexicon.md",
         "coverage-audition.md",
         "keyframe-craft.md",
@@ -116,9 +109,7 @@ EXPECTED_KNOWHOW = {
     },
     "short-drama-video-prompts": {
         "camera-audio-continuity.md",
-        "combat-motion.md",
         "delivery-profile.md",
-        "facial-performance.md",
         "generability.md",
         "motion-recipe.md",
         "minimax-h3.md",
@@ -1802,22 +1793,19 @@ class CreatorFirstGoldenTests(unittest.TestCase):
         expected = {
             "short-drama-develop": {*(f"STY-{number:02d}" for number in range(1, 31))},
             "short-drama-write": {*(f"SCR-{number:02d}" for number in range(1, 23))},
-            "short-drama-dialogue": {
-                *(f"DIA-{number:02d}" for number in range(1, 13))
-            },
             "short-drama-assets": {
                 *(f"AST-{number:02d}" for number in range(1, 16)),
                 *(f"CON-{number:02d}" for number in range(1, 8)),
             },
             "short-drama-image-prompts": {
-                *(f"IMG-{number:02d}" for number in range(1, 16))
+                *(f"IMG-{number:02d}" for number in range(1, 15))
             },
             "short-drama-storyboard": {
-                *(f"SHT-{number:02d}" for number in range(1, 32)),
+                *(f"SHT-{number:02d}" for number in range(1, 31)),
                 *(f"CON-{number:02d}" for number in range(1, 8)),
             },
             "short-drama-video-prompts": {
-                *(f"VID-{number:02d}" for number in range(1, 30)),
+                *(f"VID-{number:02d}" for number in range(1, 28)),
                 *(f"CON-{number:02d}" for number in range(1, 8)),
             },
             "short-drama-review": {*(f"REV-{number:02d}" for number in range(1, 15))},
@@ -1827,10 +1815,7 @@ class CreatorFirstGoldenTests(unittest.TestCase):
                 ROOT / "skills" / skill_name / "references/stage-contract.md"
             ).read_text(encoding="utf-8")
             actual = set(
-                re.findall(
-                    r"\b(?:STY|SCR|DIA|AST|IMG|SHT|VID|CON|REV)-\d{2}\b",
-                    contract,
-                )
+                re.findall(r"\b(?:STY|SCR|AST|IMG|SHT|VID|CON|REV)-\d{2}\b", contract)
             )
             with self.subTest(skill=skill_name):
                 self.assertEqual(actual, rule_ids)

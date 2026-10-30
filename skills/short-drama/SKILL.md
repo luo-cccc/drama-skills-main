@@ -1,6 +1,6 @@
 ---
 name: short-drama
-description: 基于文件系统初始化和继续短剧或漫剧项目，提供 creator-first 五文档路由、本地 Dashboard、制作形态与 Look Development 决策。用户提出“创建/继续短剧项目”“看进度/下一步”“做 Look Development/选择或统一画风”“打开 dashboard/短剧创作台”“导出制作资料”，或任务跨多个创作阶段时使用；明确的写作、资产、提示词、分镜、剪辑或审查请求由对应子 skill 直接处理。
+description: 基于文件系统初始化和继续短剧或漫剧项目，提供 creator-first 五文档路由、本地 Dashboard、制作形态与 Look Development 决策。用户提出“创建/继续短剧项目”“看进度/下一步”“做 Look Development”“打开 dashboard/短剧创作台”“导出制作资料”，或任务跨多个创作阶段时使用；明确的写作、资产、提示词、分镜、剪辑或审查请求由对应子 skill 直接处理。
 license: MIT
 ---
 
@@ -21,9 +21,7 @@ license: MIT
 | 开发点子、系列承诺、改编和分集地图 | `$short-drama-develop`，仅在用户需要时 |
 | 已有多集完整剧本/散稿识别分集 | `$short-drama-develop` 按实际边界建立临时索引 |
 | 分析长篇原著 | `$short-drama-novel-analyze`，仅在用户需要时 |
-| 选择或变更画风、比较代表帧 | 本技能按 Look Development 明确可观察选择，再交视觉设定与图片提示词 owner 落实；已有接受方向直接继承 |
 | 写或改单集剧本 | `$short-drama-write` → `剧本.md` |
-| 只改一场交锋、几句台词或人物声音 | `$short-drama-dialogue` → 局部台词修订稿；需要写回项目时交 `$short-drama-write` |
 | 拆人物、造型、地点、道具 | `$short-drama-assets` → `视觉设定.md` |
 | 写资产图片提示词 | `$short-drama-image-prompts` → `图片提示词.md` |
 | 做镜头和冻结关键帧 | `$short-drama-storyboard` → `分镜.md` |
@@ -44,7 +42,7 @@ license: MIT
 
 ## 执行请求
 
-1. 定位用户给出的项目或资料，只读当前任务的直接输入。先按请求的阶段路由：“写战斗剧本”仍归写作，“拆战斗分镜”归分镜，“给已有近景写表演提示词”归视频；题材词不自动启动下游。
+1. 定位用户给出的项目或资料，只读当前任务的直接输入。
 2. 把用户点名的完整范围交给相应技能；批次只控制上下文，自动续跑。
 3. 只有真实创作分叉才询问；不要拿 schema、目录、事务或检查器询问创作者。
 4. 范围完成后一次回报完成内容、关键决定、真实未决项和可选下一步。

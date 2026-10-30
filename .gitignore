@@ -1,7 +1,6 @@
 __pycache__/
 *.py[cod]
 .ruff_cache/
-.mypy_cache/
 .DS_Store
 .omc/
 .omx/

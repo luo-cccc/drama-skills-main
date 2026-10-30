@@ -154,16 +154,6 @@ held prop, prop owner/state, location/time/weather/light, axis, and screen
 direction. Distinguish unexplained contradiction from declared montage,
 ellipsis, dream, or deliberate disorientation.
 
-## Conditional craft checks
-
-Only inspect the topic this request actually uses. These questions add evidence for existing source/continuity obligations; craft defaults and taste options alone are not blockers.
-
-- Combat: can the shot show approach, contact or a sourced miss, the relevant response and a landing consistent with the next shot? Does any added counterattack, injury or effect change source meaning? Distinguish physical support from an imposed "always push off the ground" formula.
-- Style: which accepted observable choices does this image or prompt inherit? Are changes scoped to the scene or shot, and can a bound reference conflict with them? A day/night difference is not automatically drift.
-- Facial performance: is the area visible, is the trigger available to the character, and can the mouth perform the sourced speech? Preserve intentional restraint and the tested scope of model-specific reaction advice.
-- Combined load: do combat, dialogue, effects, camera and expression compete so that this shot loses its main purpose? Request a precise owner revision; do not demand that every topic leave an output trace.
-- Handoff: if preview or compiled input is available, does it still carry the intended prompt, reference roles/order and duration? Without generated-result observations, report textual risk rather than asserting achieved or failed media quality.
-
 ## Common findings
 
 - beautiful shot with no dramatic purpose;

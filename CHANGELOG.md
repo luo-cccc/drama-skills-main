@@ -15,10 +15,6 @@
 
 ### Added
 
-- 新增 `$short-drama-dialogue` 台词专项技能：只处理用户点名的场景台词，以压力链、行动化、人物声音、潜台词和表演回读重写；规则覆盖指定原句、人物知识边界、反制、动作功能与局部交付，整集结构与 `剧本.md` 落盘仍归 `$short-drama-write`。
-- 本地知识补强：分镜按需读取战斗接触与受力编排（SHT-31），视频按需读取打戏动态实现（VID-28）和面部表演（VID-29）；均为可覆盖的 craft_default，入口、决策前读取与负责人完成检查同步接入。
-- Look Development 增加可观察画风变量、作用范围与参考冲突处理；图片阶段增加已接受画风投影（IMG-15，taste_option）。沿用五文档、单技能自包含和现有模型方言，不新增自动生产动作。
-- 提供来源许可及中性任务语料、消费证据与误触发验收说明；静态可达验证不代表模型或媒体效果已经通过。
 - 图片生产新增 APIMart 异步任务兼容：GPT Image 2 与 Qwen Image 3.0 在提交后记录
   `task_id`，轮询 `/v1/tasks/{task_id}` 并下载 `result.images[].url[]`；Qwen 同时保留
   ComfyUI 本地工作流。真实参考图可走 JSON `image_urls`。
@@ -27,7 +23,7 @@
 - Dashboard 分镜页的结构化俯视站位改为可拖拽编辑器：支持坐站、朝向、群演位置与键盘沿线调整，
   保存按 `分镜.md` 版本校验只替换当前场景块。
 - 跨文档检查新增逐块节拍覆盖、按已接受语速的对白估时核对和非阻断资产诊断；迁入分镜用
-  `beats` 回填完整来源引文及画外人物声明。
+  `beats` 回填来源短引文及画外人物声明。
 - 分镜与视觉设定新增可选的 `空间视图` / `人物位置` 契约：场景图物件使用稳定
   `VIEW-*`、`ITEM-*` 和 0–1 坐标，每场记录人物所在物件、侧、沿线、坐站与朝向；
   旧项目的纯文字场景站位继续有效。`short-drama-storyboard/scripts/staging_tool.py`
@@ -1951,7 +1947,7 @@ image-prompts / storyboard / video-prompts / review。
 fresh-agent 双臂盲测、独立 reviewer verdict 与 protected-release gate 三项未完成，
 由维护者知情后放行；相应记录以 `hold` 而非 `promotion` 留在仓库外的受控工作区。
 
-[Unreleased]: https://github.com/luo-cccc/drama-skills-main/compare/7521b302cbedd3507ac4f878670bb664ec6641c4...main
+[Unreleased]: https://github.com/zenstory-ai/drama-skills/compare/v0.9.2...HEAD
 [0.9.2]: https://github.com/zenstory-ai/drama-skills/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/zenstory-ai/drama-skills/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/zenstory-ai/drama-skills/compare/v0.8.1...v0.9.0

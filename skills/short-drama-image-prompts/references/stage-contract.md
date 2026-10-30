@@ -26,7 +26,6 @@
 | IMG-12 | reviewed_invariant | Each real input reference has a stable `REF-...` slot binding explicit order, a visible project-relative path or other unambiguous artifact locator, a Chinese label, and may-control/must-not-control scope. Reordering preserves slot identity; replacing media explicitly revises that slot's locator. `IMG-...` remains reserved for image-prompt headings. |
 | IMG-13 | structural_invariant | An `IMG-...` item named by a continuity lock in `视觉设定.md` carries that lock's surface verbatim in its copyable prompt. |
 | IMG-14 | structural_invariant | Every `REF-...` slot an image-prompt item declares carries one 用途 from the closed set 身份/造型状态/地理/构图/尺度/效果/起始帧/结束帧/风格, the same vocabulary the storyboard uses, so one picture answers one question. An asset board normally uses the first six; 起始帧 and 结束帧 belong to a shot. |
-| IMG-15 | taste_option | Project accepted visual direction into observable frame-specific colour, material, edge and space choices, respecting declared exceptions, reference scopes, identity and geography rather than copying a director label or a whole style catalogue. |
 
 规则分级由高到低：`structural_invariant`（结构缺陷，阻断）、
 `reviewed_invariant`（需证据判断）、`craft_default`（常用做法，可覆盖）、

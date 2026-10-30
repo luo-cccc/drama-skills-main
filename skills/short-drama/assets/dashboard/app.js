@@ -66,7 +66,6 @@ const OWNER_SECTIONS = {
   "short-drama-novel-analyze": "analysis",
   "short-drama-develop": "project",
   "short-drama-write": "story",
-  "short-drama-dialogue": "story",
   "short-drama-assets": "cast",
   "short-drama-image-prompts": "prompts",
   "short-drama-storyboard": "storyboard",
