@@ -1,6 +1,7 @@
 """Real-browser regressions for creator-facing Dashboard behaviour."""
 
 import json
+import hashlib
 import os
 import re
 import tempfile
@@ -19,8 +20,10 @@ except ImportError:  # pragma: no cover - exercised by dependency-free local run
 from tests.test_dashboard_server import (
     EXAMPLE,
     PIXEL,
+    SKILL,
     STILL_CUT_LIST,
     create_server,
+    dashboard_server,
     make_creator_project,
     make_project,
 )
@@ -51,7 +54,17 @@ class Browser:
         cls.origin = f"http://{host}:{port}"
         cls.url = f"{cls.origin}/#{cls.server.access_token}"
         cls.playwright = sync_playwright().start()
-        cls.browser = cls.playwright.chromium.launch(headless=True)
+        browser_path = os.environ.get("DASHBOARD_CHROMIUM_EXECUTABLE")
+        try:
+            cls.browser = cls.playwright.chromium.launch(
+                headless=True, **({"executable_path": browser_path} if browser_path else {})
+            )
+        except Exception:
+            cls.playwright.stop()
+            cls.server.shutdown()
+            cls.server.server_close()
+            cls.thread.join(timeout=3)
+            raise
 
     @classmethod
     def stop(cls) -> None:
@@ -67,6 +80,9 @@ class Browser:
         )
         self.addCleanup(context.close)
         page = context.new_page()
+        page_errors = []
+        page.on("pageerror", lambda error: page_errors.append(str(error)))
+        self.addCleanup(self.assertEqual, page_errors, [])
         page.goto(self.url)
         expect(page.locator("#view")).to_have_attribute("data-state", "ready")
         if route != "#/":
@@ -463,6 +479,7 @@ class PlantedMarkupBrowserTests(Browser, unittest.TestCase):
         cls.temporary = tempfile.TemporaryDirectory()
         workspace = Path(cls.temporary.name)
         project = workspace / "creator"
+        cls.project = project
         make_creator_project(project)
         episode = project / "剧集/EP001"
         # Free-text fields only: IDs, durations and sources stay parseable, so each view renders its structure.
@@ -497,6 +514,233 @@ class PlantedMarkupBrowserTests(Browser, unittest.TestCase):
         page.fill("#palq", "没有针眼")
         expect(page.locator(".pal-item").first).to_be_visible()
         self.assertEqual(page.locator("#pwn").count(), 0)
+
+
+@unittest.skipUnless(sync_playwright, "Playwright is unavailable")
+class StagingPlanBrowserTests(Browser, unittest.TestCase):
+    """Structured scene staging is drawn and stays inside desktop and phone widths."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.temporary = tempfile.TemporaryDirectory()
+        workspace = Path(cls.temporary.name)
+        project = workspace / "creator"
+        cls.project = project
+        make_creator_project(project)
+        episode = project / "剧集/EP001"
+        visual = (episode / "视觉设定.md").read_text(encoding="utf-8")
+        view = """\
+### 空间视图 · VIEW-OFFICE-MAIN · 主视角
+- 图片：无
+- 认图来源：prompt
+- 屏幕方向：主视角朝北；画面左为西、右为东。
+- 平面物件：ITEM-DESK《办公桌》（图框：无；平面：0.24, 0.40, 0.76, 0.68；可坐：否）
+- 平面物件：ITEM-CHAIR《办公椅》（图框：无；平面：0.70, 0.16, 0.88, 0.34；可坐：是）
+
+"""
+        visual = visual.replace("## 地点 · 副团长办公室\n", "## 地点 · 副团长办公室\n" + view, 1)
+        (episode / "视觉设定.md").write_text(visual, encoding="utf-8")
+        board = (episode / "分镜.md").read_text(encoding="utf-8")
+        board = board.replace(
+            "## 场景站位 · EP001-SC001 · 副团长办公室\n",
+            "## 场景站位 · EP001-SC001 · 副团长办公室\n"
+            "- 空间视图：VIEW-OFFICE-MAIN\n"
+            "- 人物位置：江晨｜物：ITEM-DESK｜侧：west｜沿线：0.50｜姿态：stand｜朝向：east\n"
+            "- 人物位置：周薄森｜物：ITEM-CHAIR｜侧：on｜沿线：0.50｜姿态：sit｜朝向：west\n",
+            1,
+        )
+        (episode / "分镜.md").write_text(board, encoding="utf-8")
+        cls.start(workspace)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.stop()
+        cls.temporary.cleanup()
+
+    def test_desktop_and_phone_show_the_scene_plan_without_overflow(self) -> None:
+        for width, height in ((1440, 900), (390, 844)):
+            with self.subTest(width=width):
+                page = self.open(width=width, height=height, route="#/EP001/board")
+                expect(page.locator(".stage-plan")).to_have_count(1)
+                expect(page.locator(".stage-item")).to_have_count(2)
+                expect(page.locator(".stage-person")).to_have_count(2)
+                expect(page.locator(".stage-plan-svg")).to_be_visible()
+                expect(page.locator("[data-stage-save]")).to_be_visible()
+                expect(page.locator("[data-stage-extras]")).to_be_visible()
+                self.assertNoHorizontalOverflow(page)
+                self.assertIn("江晨", page.locator(".stage-plan-svg").get_attribute("aria-label"))
+                captures = os.environ.get("DASHBOARD_SCREENSHOTS_DIR")
+                if captures:
+                    target = Path(captures)
+                    target.mkdir(parents=True, exist_ok=True)
+                    page.locator(".stage-plan").screenshot(path=str(target / f"staging-{width}.png"))
+
+    def test_drag_posture_and_keyboard_write_back_to_markdown(self) -> None:
+        board = self.project / "剧集/EP001/分镜.md"
+        original = board.read_text(encoding="utf-8")
+        self.addCleanup(board.write_text, original, encoding="utf-8")
+        page = self.open(route="#/EP001/board")
+        person = page.locator('[data-stage-person="江晨"]')
+        tools = page.locator('[data-stage-person-tools="江晨"]')
+        person.focus()
+        page.keyboard.press("ArrowRight")
+        expect(page.locator("[data-stage-status]")).to_contain_text("未保存")
+        tools.get_by_role("button", name="坐").click()
+        target = page.locator(".stage-plan-svg").evaluate("""svg => {
+            const point = svg.createSVGPoint();
+            point.x = 79; point.y = 36;
+            const screen = point.matrixTransform(svg.getScreenCTM());
+            return {x:screen.x, y:screen.y};
+        }""")
+        person_box = person.locator("circle").bounding_box()
+        self.assertIsNotNone(person_box)
+        page.mouse.move(
+            person_box["x"] + person_box["width"] / 2,
+            person_box["y"] + person_box["height"] / 2,
+        )
+        page.mouse.down()
+        page.mouse.move(target["x"], target["y"])
+        page.mouse.up()
+        page.locator("[data-stage-save]").click()
+        expect(page.locator("#toast")).to_contain_text("站位已写回")
+        saved = board.read_text(encoding="utf-8")
+        self.assertRegex(
+            saved,
+            r"江晨｜物：ITEM-CHAIR｜侧：(?:on|south)｜沿线：[0-9.]+｜姿态：sit｜朝向：east",
+        )
+        self.assertIn("## SHOT-EP001-", saved)
+
+    def test_external_edit_conflicts_and_reload_is_explicit(self) -> None:
+        board = self.project / "剧集/EP001/分镜.md"
+        original = board.read_text(encoding="utf-8")
+        self.addCleanup(board.write_text, original, encoding="utf-8")
+        page = self.open(route="#/EP001/board")
+        page.locator('[data-stage-person="江晨"]').focus()
+        page.keyboard.press("ArrowRight")
+        external = original.replace("沿线：0.50", "沿线：0.25", 1)
+        board.write_text(external, encoding="utf-8")
+        page.locator("[data-stage-save]").click()
+        expect(page.locator("[data-stage-status]")).to_contain_text("别处修改")
+        self.assertEqual(board.read_text(encoding="utf-8"), external)
+        expect(page.locator("[data-stage-copy]")).to_be_visible()
+        page.once("dialog", lambda dialog: dialog.accept())
+        page.locator("[data-stage-reload]").click()
+        expect(page.locator('[data-stage-person="江晨"]')).to_have_attribute("data-stage-along", "0.25")
+        expect(page.locator("[data-stage-save]")).to_be_disabled()
+
+    def test_unsaved_staging_blocks_declined_navigation_and_page_close(self) -> None:
+        page = self.open(route="#/EP001/board")
+        page.locator('[data-stage-person="江晨"]').focus()
+        page.keyboard.press("ArrowRight")
+        page.once("dialog", lambda dialog: dialog.dismiss())
+        page.locator('a[href="#/EP001/script"]').first.click()
+        expect(page.locator("#view")).to_have_attribute("data-route", "#/EP001/board")
+        expect(page.locator("[data-stage-status]")).to_contain_text("未保存")
+        prevented = page.evaluate("""() => {
+            const event = new Event('beforeunload', {cancelable:true});
+            window.dispatchEvent(event);
+            return event.defaultPrevented;
+        }""")
+        self.assertTrue(prevented)
+
+    def test_structural_errors_and_asset_notes_are_readable_in_both_widths(self) -> None:
+        script = self.project / "剧集/EP001/剧本.md"
+        original = script.read_text(encoding="utf-8")
+        self.addCleanup(script.write_text, original, encoding="utf-8")
+        script.write_text(original + "\n江晨把一张纸条塞进抽屉。\n", encoding="utf-8")
+        for width, height in ((1440, 900), (390, 844)):
+            with self.subTest(width=width):
+                page = self.open(width=width, height=height, route="#/EP001/board")
+                errors = page.locator("[data-check-errors]")
+                errors.locator("summary").click()
+                expect(errors).to_contain_text("纸条塞进抽屉")
+                expect(errors.locator(".notice", has_text="missing.png")).not_to_contain_text("制作成果/")
+                expect(page.locator("[data-check-diagnostics]")).to_be_visible()
+                self.assertNoHorizontalOverflow(page)
+                captures = os.environ.get("DASHBOARD_SCREENSHOTS_DIR")
+                if captures:
+                    target = Path(captures)
+                    target.mkdir(parents=True, exist_ok=True)
+                    page.screenshot(path=str(target / f"diagnostics-{width}.png"))
+
+
+@unittest.skipUnless(sync_playwright, "Playwright is unavailable")
+class ReferenceOnlyBrowserTests(Browser, unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.temporary = tempfile.TemporaryDirectory()
+        workspace = Path(cls.temporary.name)
+        project = workspace / "character"
+        cls.project = project
+        tool = dashboard_server.load_project_tool(SKILL)
+        tool.initialize_project(
+            project,
+            title="角色参考图",
+            language="zh-CN",
+            prompt_language="en",
+            aspect_ratio="2:3",
+            mode="reference-only",
+            suite_root=SKILL,
+        )
+        source = project / "参考图提示词.md"
+        source.write_text(
+            "# 参考图提示词\n\n## IMG-HERO · 正面全身\n\n"
+            "- 参考：无外部参考\n\n### 可复制提示词\n> portrait\n",
+            encoding="utf-8",
+        )
+        output = project / "production/reference/HERO/front-full.v1.png"
+        output.parent.mkdir(parents=True)
+        output.write_bytes(PIXEL)
+        manifest = {
+            "schema_version": "1.0",
+            "kind": "reference_manifest",
+            "groups": {
+                "HERO": {
+                    "id": "HERO",
+                    "views": {
+                        "front-full": {
+                            "current": {
+                                "job_id": "REF-HERO",
+                                "stage": "anchor",
+                                "view": "front-full",
+                                "version": 1,
+                                "output": "production/reference/HERO/front-full.v1.png",
+                                "sha256": hashlib.sha256(PIXEL).hexdigest(),
+                                "source": "参考图提示词.md",
+                                "source_entry": "IMG-HERO",
+                                "source_sha256": hashlib.sha256(
+                                    source.read_bytes()
+                                ).hexdigest(),
+                                "depends_on_job_id": None,
+                                "depends_on_output": None,
+                                "created_at": "2026-10-30T00:00:00Z",
+                            },
+                            "versions": [],
+                        }
+                    },
+                }
+            },
+        }
+        path = project / "production/reference/index.json"
+        path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+        cls.start(workspace)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.stop()
+        cls.temporary.cleanup()
+
+    def test_reference_versions_fit_desktop_and_phone(self) -> None:
+        for width, height in ((1440, 900), (390, 844)):
+            with self.subTest(width=width):
+                page = self.open(width=width, height=height)
+                expect(page.locator("h1")).to_have_text("《角色参考图》")
+                expect(page.locator("[data-reference-view]")).to_have_count(1)
+                expect(page.locator("[data-reference-view] .status")).to_contain_text(
+                    "当前"
+                )
+                expect(page.locator(".reference-thumb img")).to_be_visible()
+                self.assertNoHorizontalOverflow(page)
 
 
 if __name__ == "__main__":

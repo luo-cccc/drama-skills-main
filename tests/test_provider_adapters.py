@@ -439,6 +439,116 @@ class ProviderCompilerTests(unittest.TestCase):
             },
         )
 
+    def test_gpt_image_model_can_target_an_openai_compatible_relay(self) -> None:
+        payload = provider_adapters.compile_gpt_image_2_payload(
+            self.image_job(size="1024x1536"),
+            model="gpt-image-2-official",
+        )
+        self.assertEqual(payload["model"], "gpt-image-2-official")
+
+    def test_qwen_image_compiles_ratio_and_reference_workflow(self) -> None:
+        image = self.image_job(ratio="2:3", seed=7)
+        image["references"] = ["输入/reference-a.png", "输入/reference-b.png"]
+        compiled = provider_adapters.compile_qwen_image_job(image)
+        self.assertEqual((compiled["width"], compiled["height"]), (1056, 1584))
+        workflow = provider_adapters.qwen_image_workflow(
+            compiled, ["ref-a.png", "ref-b.png"]
+        )
+        self.assertEqual(
+            workflow["pos"]["class_type"], "TextEncodeQwenImageEditPlus"
+        )
+        self.assertEqual(workflow["pos"]["inputs"]["image1"], ["ref1", 0])
+        self.assertEqual(workflow["pos"]["inputs"]["image2"], ["ref2", 0])
+        self.assertEqual(workflow["ks"]["inputs"]["seed"], 7)
+
+    def test_qwen_image_api_compiles_its_own_supported_fields(self) -> None:
+        image = self.image_job(ratio="4:5", negative_prompt="text, watermark")
+        payload = provider_adapters.compile_qwen_image_api_payload(
+            image, model="qwen-image-3.0"
+        )
+        self.assertEqual(
+            payload,
+            {
+                "model": "qwen-image-3.0",
+                "prompt": "vertical character portrait",
+                "n": 1,
+                "size": "1152x1440",
+                "negative_prompt": "text, watermark",
+            },
+        )
+        with self.assertRaisesRegex(ValueError, "unsupported provider parameters"):
+            provider_adapters.compile_qwen_image_api_payload(
+                self.image_job(ratio="2:3", seed=4), model="qwen-image-3.0"
+            )
+
+    def test_qwen_image_runtime_uploads_polls_and_downloads(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = root / "输入/reference.png"
+            reference.parent.mkdir()
+            reference.write_bytes(b"reference")
+            output = root / "制作成果/out.png"
+            job = {
+                "modality": "image",
+                "prompt": "vertical character portrait",
+                "references": ["输入/reference.png"],
+                "outputs": ["制作成果/out.png"],
+                "parameters": {"ratio": "2:3", "seed": 11},
+                "project_root": str(root),
+            }
+            temporary_output = root / "temporary.png"
+            temporary_output.write_bytes(b"generated")
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "COMFY_URL": "http://127.0.0.1:8188",
+                    "COMFY_POLL_INTERVAL": "0.01",
+                    "COMFY_TIMEOUT_SECONDS": "2",
+                },
+                clear=False,
+            ), mock.patch.object(
+                provider_adapters,
+                "_comfy_upload",
+                return_value="short-drama/reference.png",
+            ) as upload, mock.patch.object(
+                provider_adapters,
+                "_comfy_json",
+                side_effect=[
+                    {"prompt_id": "prompt-1"},
+                    {
+                        "prompt-1": {
+                            "status": {"status_str": "success"},
+                            "outputs": {
+                                "save": {
+                                    "images": [
+                                        {
+                                            "filename": "out.png",
+                                            "subfolder": "short-drama",
+                                            "type": "output",
+                                        }
+                                    ]
+                                }
+                            },
+                        }
+                    },
+                ],
+            ), mock.patch.object(
+                provider_adapters,
+                "_comfy_request",
+                return_value=b"generated",
+            ) as download, mock.patch.object(
+                provider_adapters,
+                "_temporary_output",
+                return_value=temporary_output,
+            ):
+                path, prompt_id = provider_adapters._run_qwen_image(job)
+            self.assertEqual(path, temporary_output)
+            self.assertEqual(prompt_id, "prompt-1")
+            upload.assert_called_once()
+            download.assert_called_once()
+            self.assertIn("/view?", download.call_args.args[0])
+            self.assertFalse(output.exists())
+
     def test_gpt_image_2_rejects_unsupported_and_invalid_geometry(self) -> None:
         for parameters in (
             {"background": "transparent"},
@@ -793,6 +903,222 @@ class ProviderRuntimeTests(unittest.TestCase):
                     )
                     self.assertEqual(path.read_bytes(), b"ID3music")
                     self.assertEqual(trace_id, "minimax-trace")
+
+    def test_apimart_gpt_image_polls_the_submitted_task_before_download(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            handle = root / "handle.json"
+            downloaded = root / "portrait.png"
+            job = {
+                "modality": "image",
+                "prompt": "portrait",
+                "references": [],
+                "outputs": ["制作成果/portrait.png"],
+                "parameters": {"width": 1024, "height": 1536},
+                "project_root": str(root),
+                "output_root": str(root),
+                "handle_path": str(handle),
+            }
+            environment = {
+                "OPENAI_API_KEY": "relay-secret",
+                "OPENAI_BASE_URL": "https://api.apimart.ai/v1",
+                "OPENAI_IMAGE_MODEL": "gpt-image-2-official",
+                "IMAGE_TASK_POLL_INTERVAL": "0.001",
+            }
+            with mock.patch.dict(os.environ, environment, clear=False), mock.patch.object(
+                provider_adapters,
+                "_request_json",
+                side_effect=[
+                    (
+                        {
+                            "code": 200,
+                            "data": [
+                                {"status": "submitted", "task_id": "task-image-1"}
+                            ],
+                        },
+                        {"x-request-id": "submit-request"},
+                    ),
+                    (
+                        {
+                            "code": 200,
+                            "data": {
+                                "id": "task-image-1",
+                                "status": "completed",
+                                "result": {
+                                    "images": [
+                                        {
+                                            "url": [
+                                                "https://upload.example/portrait.png"
+                                            ]
+                                        }
+                                    ]
+                                },
+                            },
+                        },
+                        {},
+                    ),
+                ],
+            ) as request, mock.patch.object(
+                provider_adapters, "_download", return_value=downloaded
+            ) as download, mock.patch.object(provider_adapters.time, "sleep"):
+                path, task_id = provider_adapters._run_openai(job)
+            self.assertEqual((path, task_id), (downloaded, "task-image-1"))
+            self.assertEqual(json.loads(handle.read_text())["provider_job_id"], "task-image-1")
+            self.assertEqual(request.call_args_list[0].args[0], "https://api.apimart.ai/v1/images/generations")
+            self.assertIn("/v1/tasks/task-image-1?language=en", request.call_args_list[1].args[0])
+            download.assert_called_once_with(
+                job,
+                "https://upload.example/portrait.png",
+                "制作成果/portrait.png",
+                provider="gpt-image-2-official",
+            )
+
+    def test_apimart_reference_images_use_json_data_uris_not_multipart(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = root / "输入/reference.png"
+            reference.parent.mkdir()
+            reference.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 24)
+            job = {
+                "modality": "image",
+                "prompt": "portrait",
+                "references": ["输入/reference.png"],
+                "outputs": ["制作成果/portrait.png"],
+                "parameters": {"width": 1024, "height": 1536},
+                "project_root": str(root),
+                "output_root": str(root),
+            }
+            captured: dict[str, object] = {}
+
+            def fake_request(url, **kwargs):  # type: ignore[no-untyped-def]
+                captured["url"] = url
+                captured["body"] = kwargs["body"]
+                raise provider_adapters.AdapterFailure("stop after compile")
+
+            environment = {
+                "OPENAI_API_KEY": "relay-secret",
+                "OPENAI_BASE_URL": "https://api.apimart.ai/v1",
+                "OPENAI_IMAGE_MODEL": "gpt-image-2",
+                "OPENAI_IMAGE_REFERENCE_MODE": "json_urls",
+            }
+            with mock.patch.dict(os.environ, environment, clear=False), mock.patch.object(
+                provider_adapters, "_request_json", fake_request
+            ):
+                with self.assertRaisesRegex(
+                    provider_adapters.AdapterFailure, "stop after compile"
+                ):
+                    provider_adapters._run_openai(job)
+            self.assertEqual(captured["url"], "https://api.apimart.ai/v1/images/generations")
+            body = captured["body"]
+            assert isinstance(body, dict)
+            self.assertTrue(body["image_urls"][0].startswith("data:image/png;base64,"))
+            self.assertNotIn("image[]", body)
+
+    def test_qwen_api_route_uploads_references_and_polls_its_task(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = root / "输入/reference.png"
+            reference.parent.mkdir()
+            reference.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 24)
+            job = {
+                "modality": "image",
+                "prompt": "same woman, three-quarter portrait",
+                "references": ["输入/reference.png"],
+                "outputs": ["制作成果/portrait.png"],
+                "parameters": {"ratio": "2:3"},
+                "project_root": str(root),
+                "output_root": str(root),
+            }
+            environment = {
+                "QWEN_IMAGE_TRANSPORT": "api",
+                "QWEN_IMAGE_API_KEY": "qwen-secret",
+                "QWEN_IMAGE_MODEL": "qwen-image-3.0",
+                "IMAGE_TASK_POLL_INTERVAL": "0.001",
+            }
+            with mock.patch.dict(os.environ, environment, clear=False), mock.patch.object(
+                provider_adapters,
+                "_request_json",
+                side_effect=[
+                    (
+                        {
+                            "code": 200,
+                            "data": [
+                                {"status": "submitted", "task_id": "qwen-task-1"}
+                            ],
+                        },
+                        {},
+                    ),
+                    (
+                        {
+                            "code": 200,
+                            "data": {
+                                "id": "qwen-task-1",
+                                "status": "completed",
+                                "result": {
+                                    "images": [
+                                        {"url": ["https://upload.example/qwen.png"]}
+                                    ]
+                                },
+                            },
+                        },
+                        {},
+                    ),
+                ],
+            ) as request, mock.patch.object(
+                provider_adapters,
+                "_download",
+                return_value=root / "qwen.png",
+            ):
+                path, task_id = provider_adapters._run_qwen_image(job)
+            self.assertEqual((path, task_id), (root / "qwen.png", "qwen-task-1"))
+            submitted = request.call_args_list[0].kwargs["body"]
+            self.assertEqual(submitted["size"], "1056x1584")
+            self.assertTrue(
+                submitted["image_urls"][0].startswith("data:image/png;base64,")
+            )
+
+    def test_image_task_failure_is_reported_without_provider_body(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            job = {
+                "modality": "image",
+                "prompt": "portrait",
+                "references": [],
+                "outputs": ["制作成果/portrait.png"],
+                "parameters": {},
+                "project_root": str(root),
+                "output_root": str(root),
+            }
+            environment = {
+                "OPENAI_API_KEY": "relay-secret",
+                "OPENAI_BASE_URL": "https://api.apimart.ai/v1",
+                "OPENAI_IMAGE_MODEL": "gpt-image-2",
+            }
+            with mock.patch.dict(os.environ, environment, clear=False), mock.patch.object(
+                provider_adapters,
+                "_request_json",
+                side_effect=[
+                    (
+                        {"data": [{"task_id": "failed-task"}]},
+                        {},
+                    ),
+                    (
+                        {
+                            "data": {
+                                "id": "failed-task",
+                                "status": "failed",
+                                "error": {"message": "private provider detail"},
+                            }
+                        },
+                        {},
+                    ),
+                ],
+            ), mock.patch.object(provider_adapters.time, "sleep"):
+                with self.assertRaises(provider_adapters.AdapterFailure) as raised:
+                    provider_adapters._run_openai(job)
+            public = raised.exception.public("gpt-image-2")
+            self.assertEqual(public["code"], "task_failed")
+            self.assertNotIn("private provider detail", json.dumps(public))
 
     def test_minimax_video_runtime_maps_a_successful_offline_response(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

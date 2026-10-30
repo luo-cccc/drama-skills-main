@@ -300,9 +300,11 @@ class CreatorFirstGoldenTests(unittest.TestCase):
 
         screenplay_scenes = set(heading_ids(text("剧本.md"), "EP001-SC"))
         storyboard_scenes = {
-            match.group(1)
+            scene
             for body in sections(storyboard, "SHOT-").values()
-            if (match := re.search(r"^- 来源：(EP001-SC\d+)$", body, re.MULTILINE))
+            for scene in creator_markdown_check._shot_sources(
+                bullet_fields(body).get("来源", ""), "test", None, []
+            )
         }
         self.assertEqual(storyboard_scenes, screenplay_scenes)
 

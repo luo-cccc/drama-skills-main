@@ -30,9 +30,9 @@
     },
     "EP001:contract": {
       "acceptance": {
-        "at": "2026-08-19T04:24:59.448295Z",
+        "at": "2026-10-30T05:59:32.473945Z",
         "decision": "accepted",
-        "note": "",
+        "note": "上游 brief/map 仅机械修复 Markdown 加粗闭合",
         "outputs": {
           "剧集/EP001/beats.jsonl": "9d4daa9d210a4103e2d377ad8653439d67e6614512a49ad30e6cf5fcbf6e929f",
           "剧集/EP001/episode-card.json": "1cd610f3985bd81c33985586005340414710b49efbf6af5894d17cfacb521ba1"
@@ -41,7 +41,7 @@
       "inputs": {
         "项目开发/creative-brief.md": "b0b5421ca4a3c3c85b54d7bbe4c7404a1773d1ac20fc04b6ca4a777e779fb6cf",
         "项目开发/episode-map.jsonl": "b67436c789ffd3336bf5cfb656f254f29f04919dd81d9e00a80bb0374a6613b5",
-        "项目开发/story-engine.md": "fbe3f2fa6f308c8e25397766d78af34e40d51d3e19365eda1203868d30612661"
+        "项目开发/story-engine.md": "108431103e2b5626a26c5836b50fc08c355bc9788f633c598678f9df4c539fcf"
       },
       "outputs": [
         "剧集/EP001/beats.jsonl",
@@ -49,7 +49,7 @@
       ],
       "owner": "short-drama-write",
       "review": null,
-      "updated_at": "2026-08-19T04:24:59.448453Z"
+      "updated_at": "2026-10-30T05:59:32.473960Z"
     },
     "EP001:image-prompts": {
       "acceptance": {
@@ -277,12 +277,12 @@
     },
     "develop:brief": {
       "acceptance": {
-        "at": "2026-08-19T04:24:47.659894Z",
+        "at": "2026-10-30T05:58:57.169976Z",
         "decision": "accepted",
-        "note": "",
+        "note": "story-engine 仅机械修复 Markdown 加粗闭合",
         "outputs": {
           "项目开发/creative-brief.md": "b0b5421ca4a3c3c85b54d7bbe4c7404a1773d1ac20fc04b6ca4a777e779fb6cf",
-          "项目开发/story-engine.md": "fbe3f2fa6f308c8e25397766d78af34e40d51d3e19365eda1203868d30612661"
+          "项目开发/story-engine.md": "108431103e2b5626a26c5836b50fc08c355bc9788f633c598678f9df4c539fcf"
         }
       },
       "inputs": {
@@ -296,13 +296,13 @@
       ],
       "owner": "short-drama-develop",
       "review": null,
-      "updated_at": "2026-08-19T04:24:47.660264Z"
+      "updated_at": "2026-10-30T05:58:57.169992Z"
     },
     "develop:episode-map": {
       "acceptance": {
-        "at": "2026-08-19T04:24:59.342063Z",
+        "at": "2026-10-30T05:59:15.719776Z",
         "decision": "accepted",
-        "note": "",
+        "note": "上游 story-engine 仅机械修复 Markdown 加粗闭合",
         "outputs": {
           "项目开发/episode-map.jsonl": "b67436c789ffd3336bf5cfb656f254f29f04919dd81d9e00a80bb0374a6613b5"
         }
@@ -310,14 +310,14 @@
       "inputs": {
         "项目开发/adaptation-map.jsonl": "cd37eacb44b05a0f0264193ca41d2b0e713a5c1cfb7a57c4846823ed0f399da7",
         "项目开发/creative-brief.md": "b0b5421ca4a3c3c85b54d7bbe4c7404a1773d1ac20fc04b6ca4a777e779fb6cf",
-        "项目开发/story-engine.md": "fbe3f2fa6f308c8e25397766d78af34e40d51d3e19365eda1203868d30612661"
+        "项目开发/story-engine.md": "108431103e2b5626a26c5836b50fc08c355bc9788f633c598678f9df4c539fcf"
       },
       "outputs": [
         "项目开发/episode-map.jsonl"
       ],
       "owner": "short-drama-develop",
       "review": null,
-      "updated_at": "2026-08-19T04:24:59.342256Z"
+      "updated_at": "2026-10-30T05:59:15.719791Z"
     },
     "source-analysis:chapters": {
       "acceptance": {
@@ -455,11 +455,11 @@
     },
     "source-analysis:triage": {
       "acceptance": {
-        "at": "2026-08-19T08:06:23.824724Z",
+        "at": "2026-10-30T05:58:00.916774Z",
         "decision": "accepted",
-        "note": "",
+        "note": "机械修复 Markdown 加粗闭合，语义未变",
         "outputs": {
-          "项目开发/source-analysis/triage.md": "0ad8f97179b8819924fe0f70367cf644e85e99805b364cf13f3565f0949f415f"
+          "项目开发/source-analysis/triage.md": "2893555b2924be89dcaf4b1f29ba4ecbe0332031b623342536544cede2f54ef0"
         }
       },
       "inputs": {
@@ -470,7 +470,7 @@
       ],
       "owner": "short-drama-novel-analyze",
       "review": null,
-      "updated_at": "2026-08-19T08:06:23.824903Z"
+      "updated_at": "2026-10-30T05:58:00.916788Z"
     },
     "source-analysis:units": {
       "acceptance": {
@@ -515,9 +515,9 @@
     },
     "source-analysis:value": {
       "acceptance": {
-        "at": "2026-08-19T08:06:23.928315Z",
+        "at": "2026-10-30T05:58:39.028094Z",
         "decision": "accepted",
-        "note": "",
+        "note": "上游 triage 仅机械修复 Markdown 加粗闭合",
         "outputs": {
           "项目开发/source-analysis/adaptation-value.md": "803f21358c8bca8747a3160ca9da3d10a98c43d50cd2de1ab85644d6f4be723c",
           "项目开发/source-analysis/episode-candidates.jsonl": "cdec2fe90ff6038d68ef63aeb2d631d9a5402b7a9ef6b4f2bb489f0133490e9a"
@@ -528,7 +528,7 @@
         "项目开发/source-analysis/characters.md": "0a70516e1c20c2f3444a53a8463fbd25dbdc1b65458157a592e1175eb62245d9",
         "项目开发/source-analysis/rhythm-and-emotion.md": "44a6cd00d9dfcafbf67efafb92f7584180f02a22b5a1e292d86efd93d5171ab1",
         "项目开发/source-analysis/story-units.md": "f4d33c3704cece69376f304e2cf9eb6c86bd9047fdf4fd1028abb588fd17ed70",
-        "项目开发/source-analysis/triage.md": "0ad8f97179b8819924fe0f70367cf644e85e99805b364cf13f3565f0949f415f",
+        "项目开发/source-analysis/triage.md": "2893555b2924be89dcaf4b1f29ba4ecbe0332031b623342536544cede2f54ef0",
         "项目开发/source-analysis/world.md": "5293cd25579b23f7643fbf78f5f14b85ff5cde44aba38c23b294fde80e8783d1"
       },
       "outputs": [
@@ -537,7 +537,7 @@
       ],
       "owner": "short-drama-novel-analyze",
       "review": null,
-      "updated_at": "2026-08-19T08:06:23.928519Z"
+      "updated_at": "2026-10-30T05:58:39.028109Z"
     }
   },
   "authority": {
@@ -561,5 +561,5 @@
   "project_id": "SD-40F82968AD87",
   "project_layout_mode": "canonical",
   "schema_version": "2.0",
-  "updated_at": "2026-08-19T09:53:46.272095Z"
+  "updated_at": "2026-10-30T05:59:32.473963Z"
 }

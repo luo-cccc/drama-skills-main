@@ -74,6 +74,10 @@ python3 {技能目录}/scripts/project_tool.py init ./my-drama --title "示例�
 未确认项，不让 Brief 中的确定事实留成配置里的 `null`。写入已确认的生产档案时，状态统一为
 `accepted`；`unset` 只表示尚未决定，不另造中间状态。
 `init` 只建立配置和空目录；第一次创作时再把文档写入 `剧集/<EP>/`，不预建空文件。
+只做独立角色参考图时运行
+`python3 {技能目录}/scripts/project_tool.py init ./reference --title "角色参考图" --mode reference-only`。
+该模式不建立剧集目录，只提供 `参考图提示词.md`、`输入/` 与 `production/`；参考图生产仍交给
+`$short-drama-produce` 的锚点/派生 job 流程。
 项目已经建好、用户之后才定下目标视频模型时，把选择写进档案，并同时展示它对时长区间、参考方式和
 正文语言的影响。档案只能从已发布、已接受的创作者决策写入。先在 `输入/profile.jsonl` 写一行决策记录
 （`accepted_value` 就是要落进 `choices` 的对象本身，不要再包一层 `choices`）：
@@ -122,10 +126,19 @@ python3 {技能目录}/scripts/dashboard_server.py --workspace <workspace> --sto
 端口或换令牌时加 `--restart`。不加 `--detach` 时行为不变：前台运行，Ctrl-C 结束。
 
 Dashboard 按阶段展示项目：全剧页给出下一步和分集进度，每集分剧本、设定、分镜、提示词、成片、审查
-六个视图，⌘K 搜索全剧。结构视图只读，改动在「编辑原文」里保存 Markdown。画面只认文档里的绑定：
+六个视图，⌘K 搜索全剧。结构视图默认只读；结构化场景站位可以在分镜页拖动人物、调整坐站/朝向与
+群演，保存时按 `分镜.md` 版本校验只替换该场 Markdown 块。其他改动在「编辑原文」里保存 Markdown。
+reference-only 项目直接显示项目级参考图版本、锚点/派生关系与过期原因。画面只认文档里的绑定：
 缩略图是分镜里 `用途：起始帧` 的 `REF-...`，每镜素材是剪辑单的「来源」，成片是剪辑输出；没有绑定
 就显示空位，不按文件名配图。它不负责工作流编排或媒体生产，需要写作或生成的地方只复制一句请求交回对话。
 每集目标时长取自 `status` 的 `format`，节奏对照只用已接受的 `rhythm_profile`。
+
+跨文档检查从《剧本.md》派生动作、对白与可见生产标签块：每块必须由同场镜头以完整原文引文声明，
+或在起点/动作/终点/声音中逐字承载（忽略空白与标点）。每个原文块单独一对引号；短引文和相似转述
+只帮助定位，不能证明完整承载，也不需要新建 block ID 或节拍文件。项目已接受 `format.pacing` 时，
+对白按已声明的承载镜头共同核对容量，不把跨镜台词全部归到第一镜；镜长未知时报告待核对。
+Dashboard 展示同一文本快照的结构错误与非阻断诊断，文件齐备不等于检查通过。
+资产诊断只报告当前 Markdown 可证明的缺锚点或未入镜条目，不把题材默认值升级成全局硬门。
 
 ## 项目级创作决定
 
@@ -172,3 +185,5 @@ python3 {技能目录}/scripts/project_tool.py export <project> --out <项目外
 ## 安装维护
 
 只有安装、升级或排障时运行 `python3 scripts/selftest.py`。
+
+第三方改写范围与随包许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

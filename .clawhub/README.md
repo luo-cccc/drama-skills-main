@@ -10,6 +10,12 @@ On 2026-10-03, the zenstory organization creator recorded that they created the 
 
 Each `include` pattern is relative to that skill's `path`. Paths may not escape the skill directory, follow symlinks, or pull repository-development scripts into a runtime package. `**/*` intentionally includes the skill-local `SKILL.md`, references, scripts, agents, templates, and other runtime assets.
 
+Skills carrying Shuohao-derived portions also include a local `THIRD_PARTY_NOTICES.md`
+and `licenses/` with the applicable Apache-2.0 text and upstream NOTICE. The root
+license fallback does not replace these files. The source-to-target mapping lives
+in `docs/third-party/shuohao-adaptations.json`; local package checks must verify the
+affected skill's own closure, rather than only the root source archive.
+
 The canonical packager adds the root license only when needed. Cross-platform integrity uses the exact `{path, sha256, size}` file inventory with original bytes. ClawHub v0.23.3 computes its fingerprint using JavaScript `path.localeCompare()` sorting, so the pinned CLI dry run and write must run on the same runtime. Neither digest includes the publish mode. `packageDigest` locks path-sorted canonical JSON `{path, sha256, size}` records; update the explicit version and regenerate the lock with the pinned central `clawhub_release.py lock` command whenever package bytes or exact companion versions change.
 
 ## Cold start and normal operation

@@ -17,8 +17,10 @@ Creators move between project and episode views inside one local workspace:
 ```
 
 The project overview leads to episode views for the script, settings, storyboard, prompts,
-film and review. Structured views are read-only; “编辑原文” opens the owning Markdown document
-for editing. Runtime records and integrity evidence stay outside product navigation.
+film and review. Structured views are derived from the owning Markdown documents.
+The scene staging view also supports editing positions, posture, facing, and extras;
+its explicit save replaces the corresponding Markdown block. “编辑原文” opens the owning
+document for other edits. Runtime records and integrity evidence stay outside product navigation.
 
 ## Goals
 
@@ -135,15 +137,20 @@ and prompt groups. The episode overview links to available work; editing and rev
 - Loopback-only session, Host/Origin validation, path containment, symlink refusal,
   atomic save, and concurrent-edit protection remain mandatory.
 - Never inject project HTML into the DOM.
-- The browser submits creator actions and content identifiers; it does not submit hashes,
-  manifests, or arbitrary output paths.
+- The browser submits creator actions and content identifiers. Editing also sends the
+  server-issued document version captured when the edit began, solely for concurrent-edit
+  protection; fetching a fresh version at save time must not authorize an older draft.
+  The browser does not construct production manifests or choose arbitrary output paths.
 - Every server action needs unit and HTTP coverage.
 - Every visual change needs desktop and narrow-layout inspection.
 
 ## Maintaining the workspace
 
-Routes and stage views are defined in `skills/short-drama/assets/dashboard/app.js`; read-only
-document parsing lives in that skill's `scripts/creator_views.py` and `scripts/dashboard_server.py`. Keep structured views aligned with
+Routes and stage views are defined in `skills/short-drama/assets/dashboard/app.js`; document
+parsing lives in that skill's `scripts/creator_views.py` and `scripts/dashboard_server.py`. Keep structured views aligned with
 the owning document parsers and save through the existing version-checked Markdown path.
 See the [stage-view decision](.agents/notes/implemented/feature/2026-09-27-dashboard-v2-stage-views.md)
 for the accepted architecture and tradeoffs.
+The [staging and reference-image decision](.agents/notes/implemented/architecture/2026-10-30-real-provider-staging-and-release-candidate.md)
+records the later editable staging extension. The [2026-10-30 repository audit](evaluations/repository-audit-2026-10-30.md)
+records how the identified gaps between these constraints and the implementation were closed.

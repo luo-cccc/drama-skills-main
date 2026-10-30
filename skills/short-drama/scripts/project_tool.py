@@ -19,6 +19,7 @@ import re
 import shutil
 import stat
 import sys
+import time
 import unicodedata
 import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -102,6 +103,8 @@ PUBLISHABLE_ROOTS = tuple(
     if role in PUBLISHABLE_ROOT_ROLES
 )
 PROJECT_DIRS = (*CANONICAL_ROOTS.values(), ".short-drama")
+REFERENCE_ONLY_DIRS = ("输入", "production", ".short-drama")
+REFERENCE_PROMPTS_FILE = "参考图提示词.md"
 
 PROTECTED_PUBLISH_ROLE_REASONS = {
     "inputs": "creator inputs are immutable publication sources",
@@ -422,6 +425,7 @@ def initialize_project(
     prompt_language: str = DEFAULT_PROMPT_LANGUAGE,
     episode_count: int | None = None,
     target_seconds_per_episode: float | None = None,
+    mode: str = "drama",
     suite_root: Path | None = None,
 ) -> dict[str, Any]:
     language = normalize_language_tag(language, field="language")
@@ -439,13 +443,20 @@ def initialize_project(
         or target_seconds_per_episode <= 0
     ):
         raise ValueError("target_seconds_per_episode must be a positive number of seconds")
+    if mode not in {"drama", "reference-only"}:
+        raise ValueError("mode must be drama or reference-only")
+    if mode == "reference-only" and (
+        episode_count is not None or target_seconds_per_episode is not None
+    ):
+        raise ValueError("reference-only projects do not take episode settings")
     root = path.expanduser().resolve()
     project_path = root / PROJECT_FILE
     if project_path.exists():
         raise FileExistsError(f"project already exists: {project_path}")
 
     root.mkdir(parents=True, exist_ok=True)
-    for relative in PROJECT_DIRS:
+    project_dirs = REFERENCE_ONLY_DIRS if mode == "reference-only" else PROJECT_DIRS
+    for relative in project_dirs:
         (root / relative).mkdir(parents=True, exist_ok=True)
 
     core = suite_root or Path(__file__).resolve().parents[1]
@@ -458,6 +469,7 @@ def initialize_project(
             "title": title.strip() or "未命名短剧",
             "language": language,
             "created_at": utc_now(),
+            "project_mode": mode,
         }
     )
     project["format"]["aspect_ratio"] = aspect_ratio
@@ -476,6 +488,13 @@ def initialize_project(
     }
     atomic_json(root / STATE_FILE, state)
     atomic_json(project_path, project)
+    if mode == "reference-only":
+        (root / REFERENCE_PROMPTS_FILE).write_text(
+            "# 参考图提示词\n\n"
+            "按 `IMG-*` 条目维护角色锚点与派生视图；图片生产仍遵守"
+            " preview → explicit confirm → run。\n",
+            encoding="utf-8",
+        )
     return {"project_root": str(root), "project": project, "state": state}
 
 
@@ -894,10 +913,6 @@ def _lock_handle(handle: Any) -> Iterator[None]:
     if os.name == "nt":
         import msvcrt
 
-        handle.seek(0, os.SEEK_END)
-        if handle.tell() == 0:
-            handle.write(b"0")
-            handle.flush()
         handle.seek(0)
         locking = getattr(msvcrt, "locking")
         lock = getattr(msvcrt, "LK_LOCK")
@@ -922,7 +937,19 @@ def _lock_handle(handle: Any) -> Iterator[None]:
 def _project_lock(root: Path) -> Iterator[None]:
     lock_path = root / ".short-drama/project.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with lock_path.open("a+b") as handle, _lock_handle(handle):
+    handle = None
+    delay = 0.01
+    for remaining in range(5, -1, -1):
+        try:
+            handle = lock_path.open("a+b")
+            break
+        except PermissionError:
+            if not remaining:
+                raise
+            time.sleep(delay)
+            delay *= 2
+    assert handle is not None
+    with handle, _lock_handle(handle):
         yield
 
 
@@ -1070,6 +1097,7 @@ def _build_status(
     return {
         "project_id": project.get("project_id"),
         "title": project.get("title"),
+        "project_mode": project.get("project_mode", "drama"),
         "language": languages["language"],
         "prompt_language": languages["prompt_language"],
         "video_prompt_language": languages["video_prompt_language"],
@@ -2465,6 +2493,11 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--language", default="zh-CN")
     init.add_argument("--prompt-language", default=DEFAULT_PROMPT_LANGUAGE)
     init.add_argument("--aspect-ratio", default="9:16")
+    init.add_argument(
+        "--mode",
+        choices=("drama", "reference-only"),
+        default="drama",
+    )
     init.add_argument("--episode-count", type=int)
     init.add_argument("--target-seconds", type=float, dest="target_seconds_per_episode")
 
@@ -2571,6 +2604,7 @@ def main(argv: list[str] | None = None) -> int:
                 aspect_ratio=args.aspect_ratio,
                 episode_count=args.episode_count,
                 target_seconds_per_episode=args.target_seconds_per_episode,
+                mode=args.mode,
             )
         elif args.command == "status":
             result = project_status(Path(args.path))

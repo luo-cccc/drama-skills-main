@@ -116,6 +116,32 @@ python3 <本技能目录>/scripts/production_tool.py audit <project>
 一个 job 不混合 modality。大批量工作拆成创作者能看清数量和成本边界的小 job；不为方便把整季
 隐式塞进一次确认。
 
+### 角色参考图的锚点与派生
+
+独立角色参考图使用 reference-only workspace；剧集项目仍可使用
+`剧集/<EP>/图片提示词.md`。两种情况都保持“一个视图一个 job”：
+
+```text
+锚点 job → 明确确认 → 运行成功
+  └── 正脸 job → 明确确认 → 运行成功
+  └── 侧面 job → 明确确认 → 运行成功
+  └── 背面 job → 明确确认 → 运行成功
+```
+
+参考图 job 在普通 image job 上增加：
+
+- `production_profile: reference-sheet`；
+- `reference_stage: anchor|derived`；
+- `reference_group` 与 `reference_view`，供版本视图分组；
+- 派生 job 的 `depends_on_job_id`；
+- 派生 job 的 `depends_on_output`，写父图路径与 SHA256。
+
+派生 job 必须把父图同时放进 `references` / `reference_bindings`。父 job 尚未成功、父图字节变化、
+父 job 指纹变化或锚点尚未确认时，`prepare` 直接失败；`confirm` 与 `run` 前还会再次核对。
+锚点确认只覆盖锚点 job，不能代替派生视图自己的预览与确认。
+成功产出后会更新 `制作成果/references/index.json`；Dashboard 用它显示当前版本、父图关系、
+历史版本和过期原因。
+
 ## Adapter 边界
 
 adapter 配置必须在项目外，包含 argv 命令、超时和可选的 `reference_roles`；凭据由 adapter 从进程环境或系统凭据
@@ -129,12 +155,15 @@ adapter 配置必须在项目外，包含 argv 命令、超时和可选的 `refe
 引用语义说明（中文名、用途、允许控制与不得控制范围）；不会把槽位名误当成要渲染进画面的文字。
 外部 adapter 也必须保留这组语义或明确拒绝，不能只上传文件而静默丢失控制边界。
 
-本技能提供五个可选的 stdlib adapter，均通过项目外 adapter config 选择，凭据只从运行环境读取：
+本技能提供六个可选的 stdlib adapter，均通过项目外 adapter config 选择，凭据只从运行环境读取：
 
 - [Seedance](references/providers/seedance.md)：模型/Endpoint ID 必须由账号显式配置；compiler 支持
   图片、视频和音频参考 role，本地参考文件由内置 runtime 编码为 data URI 发送。
 - [GPT Image 2](references/providers/gpt-image-2.md)：无参考图走 generation，有参考图走 edit；
-  固定高保真引用并校验尺寸、格式与透明背景限制。
+  固定高保真引用并校验尺寸、格式与透明背景限制；OpenAI 兼容端点与模型可显式配置，支持
+  APIMart 的异步 `task_id` 查询与 URL 下载。
+- [Qwen Image](references/providers/qwen-image.md)：支持本地 ComfyUI 工作流和 APIMart
+  `qwen-image-3.0` 异步 API；两条路径都最多发送三张参考图，本地采样参数不会静默送入远端。
 - [MiniMax Music](references/providers/minimax-music.md)：使用 `music-3.0` 与 hex 结果，区分主题曲
   和纯配乐，不伪造时长请求字段。
 - [MiniMax 语音](references/providers/minimax-speech.md)：`tts` 模态；模型与 `voice_id` 都必须
@@ -189,3 +218,5 @@ Dashboard 只负责展示这些文件和运行摘要，不提供 adapter 设置�
 python3 scripts/selftest.py
 python3 scripts/provider_adapters.py --selftest
 ```
+
+第三方改写范围与随包许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

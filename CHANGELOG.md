@@ -19,6 +19,65 @@
 - 本地知识补强：分镜按需读取战斗接触与受力编排（SHT-31），视频按需读取打戏动态实现（VID-28）和面部表演（VID-29）；均为可覆盖的 craft_default，入口、决策前读取与负责人完成检查同步接入。
 - Look Development 增加可观察画风变量、作用范围与参考冲突处理；图片阶段增加已接受画风投影（IMG-15，taste_option）。沿用五文档、单技能自包含和现有模型方言，不新增自动生产动作。
 - 提供来源许可及中性任务语料、消费证据与误触发验收说明；静态可达验证不代表模型或媒体效果已经通过。
+- 图片生产新增 APIMart 异步任务兼容：GPT Image 2 与 Qwen Image 3.0 在提交后记录
+  `task_id`，轮询 `/v1/tasks/{task_id}` 并下载 `result.images[].url[]`；Qwen 同时保留
+  ComfyUI 本地工作流。真实参考图可走 JSON `image_urls`。
+- Dashboard reference-only 项目新增项目级参考图版本视图，显示当前/过期、锚点/派生、父图与
+  历史数量。
+- Dashboard 分镜页的结构化俯视站位改为可拖拽编辑器：支持坐站、朝向、群演位置与键盘沿线调整，
+  保存按 `分镜.md` 版本校验只替换当前场景块。
+- 跨文档检查新增逐块节拍覆盖、按已接受语速的对白估时核对和非阻断资产诊断；迁入分镜用
+  `beats` 回填完整来源引文及画外人物声明。
+- 分镜与视觉设定新增可选的 `空间视图` / `人物位置` 契约：场景图物件使用稳定
+  `VIEW-*`、`ITEM-*` 和 0–1 坐标，每场记录人物所在物件、侧、沿线、坐站与朝向；
+  旧项目的纯文字场景站位继续有效。`short-drama-storyboard/scripts/staging_tool.py`
+  提供 `parse`、`validate`、`blocking`、`cache`，缓存位于 `.short-drama/staging/`，
+  可由正式 Markdown 重建。
+- 引入 Shuohao Skills 2.2.1 的第三方来源清单、Apache-2.0 许可证正文和 NOTICE；
+  待移植文件可从 `docs/third-party/shuohao-skills-2.2.1.json` 追溯。
+- 新增 reference-only 工作区：`init --mode reference-only` 只建立参考图提示词、输入与生产目录，
+  不要求剧集或五份剧集文档。
+- 图片生产新增 `reference-sheet` job profile：锚点与派生视图分别确认、分别运行；派生 job
+  必须绑定成功父 job 的当前输出 SHA256，父图变化后回到重新准备和确认。
+- 分镜新增离线 H3/Seedance 投产包：从现有两份 Markdown 生成每段提示词、有序附件与
+  `manifest.json`；包含未分组镜头、检查分组时长，并把 `PLAN-*` 与待补参考图列入缺口。
+- 新增 `tools/migrate_shuohao.py`：一次性迁移 Shuohao 大纲、角色、美术、剧本、站位和
+  分镜 JSON，生成 Drama 项目 Markdown、改编大纲与迁移待决报告；旧 JSON 不进入运行链路。
+- Dashboard 分镜页新增结构化场景俯视视图：绘制场景物件、人物坐标、朝向、可坐区域、
+  群演与开场未在场人物；纯文字站位项目保持原样。
+
+### Changed
+
+- 逐块承载只接受同场完整原文引文或逐字承载声明；部分相似片段不再作为通过依据。
+  *升级*：按真实镜头职责补齐《分镜.md》的完整来源引文，每个原文块单独一对引号；
+  不新增节拍文件或 block ID，也不要只为通过校验声明本镜实际没有承担的内容。
+- 没有 `format.pacing` 的项目仍只报告精确字数/段落数，不用默认语速制造时长结论；
+  资产缺锚点或未入镜候选只进入 NOTES，不单独阻断创作。
+- Shuohao 迁移测试矩阵扩大为单/多集、outline-only、script-only、CRLF、缺档、真实分镜图和
+  `PLAN-START` 两类参考图路径。
+
+### Fixed
+
+- 站位草稿绑定开始编辑时的分镜版本；保存冲突保留调整，并提供复制与显式重新载入。
+  未保存的站位会参与关闭、刷新和切换项目保护；保存期间继续调整也不会被清空。
+- 参考图状态按精确来源路径、当前输出字节和完整父图链计算；来源缺失、父图修改/删除、
+  跨组依赖与依赖成环不会再把派生图误报为当前版本。
+- 对白估时按已声明承载镜头核对共享容量，不再把跨镜台词全部计入第一镜，
+  也不重复使用同一镜长；镜长未知时保留待核对提示。
+- Dashboard 消费同一安全文本快照的结构错误、资产诊断、项目语速、提示词语言和参考文件可用性；
+  提示可直接打开所属文档，文件齐备不再被误当作结构检查通过。
+- Windows CRLF 原文在编辑器内统一按 LF 定位，修复镜头跳转偏移与撤销后仍显示未保存的问题。
+- Shuohao 迁移保留完整原文来源；带冒号的动作标签增加动作前缀，避免误读为人物对白。
+- 三个包含 Shuohao 改写的技能补齐本地第三方说明、Apache-2.0 与 NOTICE；
+  来源映射覆盖具体目标文件，ClawHub 精确依赖版本与包摘要同步刷新。
+- Windows 上同一个项目的两个 Dashboard 进程同时保存时，项目锁文件不再在取得锁之前先写入；
+  竞争方现在稳定得到版本冲突，而不是偶发 `403`。
+- `让你管账号` 回归夹具的两处 Markdown 加粗闭合已机械修复，并沿来源链重新发布、接受，
+  保持 21 个录制产物全部为 `accepted`。
+- Windows CRLF 的 `视觉设定.md` / `分镜.md` 现在能完整解析结构化物件与人物位置，不再在
+  Dashboard 把已有空间视图显示为空，也不会因此拒绝站位保存。
+- APIMart 图片提交返回异步任务时不再被误报为“没有返回图片”；collect 只轮询既有任务，
+  不会重新计费提交。
 
 ## [0.9.2] - 2026-10-20
 
@@ -1892,7 +1951,7 @@ image-prompts / storyboard / video-prompts / review。
 fresh-agent 双臂盲测、独立 reviewer verdict 与 protected-release gate 三项未完成，
 由维护者知情后放行；相应记录以 `hold` 而非 `promotion` 留在仓库外的受控工作区。
 
-[Unreleased]: https://github.com/zenstory-ai/drama-skills/compare/v0.9.2...HEAD
+[Unreleased]: https://github.com/luo-cccc/drama-skills-main/compare/7521b302cbedd3507ac4f878670bb664ec6641c4...main
 [0.9.2]: https://github.com/zenstory-ai/drama-skills/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/zenstory-ai/drama-skills/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/zenstory-ai/drama-skills/compare/v0.8.1...v0.9.0

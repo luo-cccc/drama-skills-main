@@ -2762,7 +2762,18 @@ class DashboardViewEndpointTests(unittest.TestCase):
 
     def test_series_summarises_every_episode_without_internals(self) -> None:
         series, raw = self.get(f"/api/series?project={self.project_id()}")
-        self.assertEqual(set(series), {"title", "format", "rhythm", "lifecycle", "episodes", "cast"})
+        self.assertEqual(
+            set(series),
+            {
+                "title",
+                "project_mode",
+                "format",
+                "rhythm",
+                "lifecycle",
+                "episodes",
+                "cast",
+            },
+        )
         self.assertEqual(series["format"]["target_seconds_per_episode"], 60)
         self.assertEqual(series["rhythm"]["close_shot_share_min"], 0.45)
         first, second = series["episodes"]

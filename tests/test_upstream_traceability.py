@@ -10,6 +10,7 @@ accepted screenplay rather than re-write it. Both are checked here.
 from __future__ import annotations
 
 import importlib.util
+import re
 import shutil
 import tempfile
 import unittest
@@ -269,7 +270,10 @@ class StoryboardFollowsTheScreenplayTests(EpisodeFixture):
     def test_a_shot_without_a_source_is_an_error(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project, episode = self.episode(directory)
-            self.edit(episode / "分镜.md", "- 来源：EP001-SC001\n", "")
+            path = episode / "分镜.md"
+            text, count = re.subn(r"^- 来源：[^\n]*\n", "", path.read_text(encoding="utf-8"), count=1, flags=re.MULTILINE)
+            self.assertEqual(count, 1)
+            path.write_text(text, encoding="utf-8")
 
             errors = creator_markdown_check.validate_episode(episode, project)
             self.assertTrue(any("缺少来源字段" in error for error in errors), errors)

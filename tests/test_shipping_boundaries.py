@@ -14,6 +14,7 @@ PROVIDER_ADAPTER = SHIPPED_SKILLS / "short-drama-produce/scripts/provider_adapte
 ALLOWED_PROVIDER_URLS = {
     "skills/short-drama-produce/scripts/provider_adapters.py": {
         "https://api.openai.com/v1",
+        "https://api.apimart.ai/v1",
         "https://ark.cn-beijing.volces.com/api/v3",
         "https://api.minimax.io/v1",
         "https://api.minimax.io/v2",
@@ -24,6 +25,9 @@ ALLOWED_PROVIDER_URLS = {
     },
     "skills/short-drama-produce/references/providers/gpt-image-2.md": {
         "https://api.openai.com/v1",
+        "https://api.apimart.ai/v1",
+        "https://docs.apimart.ai/en/api-reference/images/gpt-image-2/generation",
+        "https://docs.apimart.ai/en/api-reference/tasks/status",
         "https://developers.openai.com/api/docs/models/gpt-image-2",
         "https://developers.openai.com/api/reference/resources/images/methods/generate",
         "https://developers.openai.com/api/reference/resources/images/methods/edit",
@@ -35,6 +39,11 @@ ALLOWED_PROVIDER_URLS = {
     "skills/short-drama-produce/references/providers/minimax-speech.md": {
         "https://api.minimax.io/v1",
         "https://platform.minimax.io/docs/api-reference/speech-t2a-http",
+    },
+    "skills/short-drama-produce/references/providers/qwen-image.md": {
+        "https://api.apimart.ai/v1",
+        "https://docs.apimart.ai/en/api-reference/images/qwen-image-3.0/generation",
+        "https://docs.apimart.ai/en/api-reference/tasks/status",
     },
     "skills/short-drama-produce/references/providers/minimax-h3-video.md": {
         "https://api.minimax.io/v2",
@@ -66,6 +75,20 @@ ALLOWED_PROVIDER_URLS = {
         "https://platform.qianwenai.com/docs/developer-guides/video-generation/wan30-video",
     },
 }
+# Public attribution travels with these independent installation units. Keep
+# exceptions exact to each notice file; provider runtime URL rules stay scoped
+# to their existing files above.
+for _skill in ("short-drama", "short-drama-produce", "short-drama-storyboard"):
+    ALLOWED_PROVIDER_URLS[f"skills/{_skill}/THIRD_PARTY_NOTICES.md"] = {
+        "https://github.com/eternityspring/shuohao-skills",
+    }
+    ALLOWED_PROVIDER_URLS[f"skills/{_skill}/licenses/Apache-2.0.txt"] = {
+        "http://www.apache.org/licenses/",
+        "https://www.apache.org/licenses/LICENSE-2.0",
+    }
+    ALLOWED_PROVIDER_URLS[f"skills/{_skill}/licenses/shuohao-skills-NOTICE.txt"] = {
+        "https://www.apache.org/licenses/LICENSE-2.0",
+    }
 RELEASE_TEXT_SUFFIXES = {
     ".ass",
     ".css",
@@ -151,13 +174,7 @@ class ShippingBoundaryTests(unittest.TestCase):
 
     def test_shipped_tree_contains_no_cache_or_binary_artifact(self) -> None:
         forbidden = {".pyc", ".pyo", ".so", ".dylib", ".dll", ".exe"}
-        tracked = subprocess.run(
-            ["git", "ls-files", "skills"],
-            cwd=SUITE,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.splitlines()
+        tracked = [name for name in tracked_paths() if name.startswith("skills/")]
         findings = [
             relative
             for relative in tracked
@@ -171,7 +188,7 @@ class ShippingBoundaryTests(unittest.TestCase):
         leaks: list[str] = []
         seen: dict[str, set[str]] = {}
         for path in shipped_text_files():
-            relative = str(path.relative_to(SUITE))
+            relative = path.relative_to(SUITE).as_posix()
             for found in url.findall(path.read_text(encoding="utf-8")):
                 seen.setdefault(relative, set()).add(found)
                 if found not in ALLOWED_PROVIDER_URLS.get(relative, set()):

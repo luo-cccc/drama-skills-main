@@ -4,9 +4,9 @@
  *
  * The server parses every document (GET /api/series, /api/episode,
  * /api/search); this file only lays the structures out. Markdown is the one
- * source of truth: structured views are read-only, 编辑原文 opens the raw
- * Markdown, and a save goes through PUT /api/file with the version it was
- * opened at. Nothing here generates, renders or submits production; actions
+ * source of truth: 编辑原文 opens the raw Markdown, and structured staging
+ * writes its owning block. Every edit saves against its captured document
+ * version. Nothing here generates, renders or submits production; actions
  * become a sentence copied for the assistant.
  *
  * Every piece of project text is escaped before it reaches innerHTML, and
@@ -742,6 +742,7 @@ const S = {
   project: null,
   series: null,
   tree: null,
+  projectReferences: null,
   status: null,
   episodes: new Map(),
   theme: local.get("theme", "auto"),
@@ -752,6 +753,8 @@ const S = {
   lastHash: "",
   renderSequence: 0,
   pendingLine: null,
+  stagingDrafts: new Map(),
+  stageDrag: null,
   palette: { sel: 0, items: [], scope: "ep", timer: null, sequence: 0 },
 };
 
@@ -801,11 +804,17 @@ async function loadProject(id) {
     api(`/api/series?${query({ project: id })}`),
     api(`/api/tree?${query({ project: id })}`),
   ]);
+  const projectReferences = series.project_mode === "reference-only"
+    ? await api(`/api/references?${query({ project: id })}`)
+    : null;
   S.project = id;
   S.series = series;
   S.tree = tree;
+  S.projectReferences = projectReferences;
   S.files = flatten(tree.tree);
   S.episodes = new Map();
+  S.stagingDrafts = new Map();
+  S.stageDrag = null;
   S.copied = new Set(local.get(`copied.${id}`, []));
   local.set("project", id);
 }
@@ -823,10 +832,15 @@ async function refreshProject() {
     api(`/api/series?${query({ project: S.project })}`),
     api(`/api/tree?${query({ project: S.project })}`),
   ]);
+  const projectReferences = series.project_mode === "reference-only"
+    ? await api(`/api/references?${query({ project: S.project })}`)
+    : null;
   S.series = series;
   S.tree = tree;
+  S.projectReferences = projectReferences;
   S.files = flatten(tree.tree);
   S.episodes = new Map();
+  S.stageDrag = null;
 }
 
 /* ================================================================ chrome */
@@ -936,8 +950,23 @@ const gap = (value, goal) => `<span class="status">${esc(gapText(value, goal))}<
 function statusMark(ok, words = ["符合", "偏离"]) {
   return `<span class="status ${ok ? "ok" : "warn"}">${icon(ok ? "check" : "alert")}${ok ? words[0] : words[1]}</span>`;
 }
+function checkMessage(message) {
+  const missing = String(message).match(/^(.*?): REF 文件不存在(?:或不可安全读取)?: (.+)$/);
+  return missing ? `${missing[1]}：参考文件不可用（${pathSegments(missing[2]).at(-1) || "未命名文件"}）` : String(message);
+}
 function problemNotices(E) {
-  return (E.problems || []).map((problem) => `<div class="notice" role="note">${icon("alert")}<span>${esc(problem)}</span></div>`).join("");
+  const problems = (E.problems || []).map((problem) => `<div class="notice" role="note">${icon("alert")}<span>${esc(problem)}</span></div>`).join("");
+  const errors = E.checks?.errors || [];
+  const notes = E.checks?.diagnostics || [];
+  const actions = (message) => {
+    const named = ["剧本.md", "视觉设定.md", "分镜.md", "图片提示词.md", "视频提示词.md"].find((name) => message.startsWith(name));
+    const locator = message.match(/^(SHOT|MOTION|GROUP|IMG|VIEW)-[A-Z0-9-]+/);
+    const owner = named || (locator ? { SHOT: "分镜.md", MOTION: "视频提示词.md", GROUP: "视频提示词.md", IMG: "图片提示词.md", VIEW: "视觉设定.md" }[locator[1]] : null);
+    return owner ? editButton(E.docs?.[owner], locator?.[0] || "", "查看并修改", "btn sm") : "";
+  };
+  const checks = errors.length ? `<details class="document-checks" data-check-errors><summary>${icon("alert")}有 ${errors.length} 处需要核对</summary><p class="muted small">文档已具备仍可能遗漏来源、引用或时长，请按下面的位置核对。</p>${errors.map((message) => `<div class="notice"><span>${esc(checkMessage(message))}</span>${actions(message)}</div>`).join("")}</details>` : "";
+  const diagnostics = notes.length ? `<details class="document-checks" data-check-diagnostics><summary>${notes.length} 条结构检查与资产提示</summary><ul>${notes.map((message) => `<li>${esc(message)}</li>`).join("")}</ul></details>` : "";
+  return problems + checks + diagnostics;
 }
 function editButton(path, at = "", label = "编辑原文", cls = "btn") {
   if (!path) return "";
@@ -1008,8 +1037,47 @@ function thumb(C, shot, withSeconds = true) {
 
 /* ================================================================ overview */
 
+function viewReferenceOverview() {
+  const series = S.series;
+  const references = S.projectReferences || { groups: [], problems: [], media: {} };
+  const views = references.groups.flatMap((group) =>
+    group.views.map((view) => ({ ...view, group: group.id }))
+  );
+  const current = views.filter((view) => view.status === "current").length;
+  const expired = views.filter((view) => view.status !== "current").length;
+  const source = (S.files || []).find((file) => file.path === "参考图提示词.md");
+  const groups = new Set(views.map((view) => view.group)).size;
+  const tiles = [
+    ["角色组", groups],
+    ["当前版本", current],
+    ["已过期", expired],
+    ["视图总数", views.length],
+  ];
+  return `<div class="wrap" data-view="references">
+    <section class="hero">
+      <div class="hero-t">
+        <div class="eyebrow">角色参考图 · ${esc(creatorStatus(series.lifecycle)[0])}</div>
+        <h1>《${esc(creatorTitle(series.title))}》</h1>
+        <div class="meta"><span>参考图工作区</span>${series.format.aspect_ratio ? `<span>画幅 ${esc(series.format.aspect_ratio)}</span>` : ""}</div>
+        <div class="kpis">${tiles.map(([label, value]) => `<div class="card kpi"><div class="k">${esc(label)}</div><div class="v">${esc(String(value))}</div></div>`).join("")}</div>
+      </div>
+      <div class="card next">
+        <div class="eyebrow">下一步</div>
+        <div class="todo"><span class="num">1</span><div><div class="t">${expired ? "处理已过期的参考图版本" : views.length ? "核对当前参考图和派生关系" : "先写角色参考图条目"}</div><div class="d">${expired ? "提示词、图片字节或父图已经变化，相关派生素材需要重出。" : views.length ? "图片和来源都按当前 Markdown 核对。" : "从锚点开始，再生成正脸、侧面等派生视图。"}</div></div><div class="acts">${source ? `<a class="btn sm primary" href="#/edit?${esc(query({ path: source.path }))}">打开</a>` : ""}</div></div>
+        <p class="foot">生产仍在对话里预览、确认后运行；创作台不会提交生成任务。</p>
+      </div>
+    </section>
+    ${references.problems.length ? `<div class="notice danger">${icon("alert")}<span>${esc(references.problems.join(" "))}</span></div>` : ""}
+    <div class="section-t"><h3>参考图与版本</h3><span class="n">按角色锚点和派生视图组织</span>${source ? editButton(source.path) : ""}</div>
+    ${views.length ? referenceVersionsHTML(references, references.media) : '<div class="empty"><h3>还没有成功生成的参考图</h3><p>运行成功的锚点与派生视图会在这里显示当前版本、父图和历史数量。</p></div>'}
+    <div class="section-t"><h3>项目文件</h3><span class="n">${(S.files || []).length} 份</span><a class="more" href="#/files">全部文件 →</a></div>
+    <div class="card files-list">${(S.files || []).slice(0, 12).map(fileRow).join("") || '<p class="muted small">项目还没有文件。</p>'}</div>
+  </div>`;
+}
+
 function viewOverview() {
   const series = S.series;
+  if (series.project_mode === "reference-only") return viewReferenceOverview();
   const rows = series.episodes;
   const count = series.format.episode_count || rows.length;
   const perEpisode = target();
@@ -1253,12 +1321,318 @@ function soundFlags(C, shot) {
 
 /** 场景站位: the staging a scene's shots inherit, shown as written. */
 function blockingRows(block) {
-  return `<dl class="blocking-dl">${block.rows.map(([key, value]) => `<dt>${esc(key)}</dt><dd>${esc(value)}</dd>`).join("")}</dl>`;
+  const hidden = block.view ? new Set(["空间视图", "人物位置", "群演"]) : new Set();
+  return `<dl class="blocking-dl">${block.rows.filter(([key]) => !hidden.has(key)).map(([key, value]) => `<dt>${esc(key)}</dt><dd>${esc(value)}</dd>`).join("")}</dl>`;
 }
 
-function blockingHTML(blocks) {
+const FACING_VECTOR = {
+  north: [0, -1], northeast: [0.707, -0.707], east: [1, 0], southeast: [0.707, 0.707],
+  south: [0, 1], southwest: [-0.707, 0.707], west: [-1, 0], northwest: [-0.707, -0.707],
+};
+
+const STAGE_FACING_LABEL = {
+  north: "北", northeast: "东北", east: "东", southeast: "东南",
+  south: "南", southwest: "西南", west: "西", northwest: "西北",
+};
+const STAGE_SIDE_LABEL = { north: "北侧", east: "东侧", south: "南侧", west: "西侧", on: "物件上" };
+
+function currentEpisode() {
+  const route = parseRoute(location.hash);
+  return route.ep ? S.episodes.get(route.ep) || null : null;
+}
+
+function stageBlock(scene) {
+  return (currentEpisode()?.board?.blocking || []).find((block) => block.scene === scene) || null;
+}
+
+function stageDraft(block, E = currentEpisode()) {
+  if (!S.stagingDrafts.has(block.scene)) {
+    S.stagingDrafts.set(block.scene, {
+      dirty: false,
+      saving: false,
+      revision: 0,
+      conflict: false,
+      episode: E?.id,
+      version: E?.documentVersions?.["分镜.md"] || null,
+      positions: block.positions.map((person) => ({
+        ...person,
+        along: person.present ? Number(person.along) : null,
+      })),
+      extras: block.extras || 0,
+      extrasWhere: block.extrasWhere || "",
+    });
+  }
+  return S.stagingDrafts.get(block.scene);
+}
+
+function stagePoint(view, person) {
+  const item = (view.items || []).find((entry) => entry.id === person.item);
+  if (!item) return null;
+  const [west, north, east, south] = item.plan;
+  const along = Number(person.along);
+  if (!Number.isFinite(along)) return null;
+  let x;
+  let y;
+  if (person.side === "on") {
+    x = (west + east) / 2;
+    y = (north + south) / 2;
+  } else if (person.side === "north" || person.side === "south") {
+    x = west + (east - west) * along;
+    y = north - 0.04 + (person.side === "south" ? (south - north) + 0.08 : 0);
+  } else if (person.side === "west" || person.side === "east") {
+    x = west - 0.04 + (person.side === "east" ? (east - west) + 0.08 : 0);
+    y = north + (south - north) * along;
+  } else {
+    return null;
+  }
+  return [Math.min(100, Math.max(0, x * 100)), Math.min(100, Math.max(0, y * 100))];
+}
+
+function stagePlacement(view, x, y) {
+  let best = null;
+  for (const item of view.items || []) {
+    const [west, north, east, south] = item.plan;
+    if (item.seat && x >= west && x <= east && y >= north && y <= south) {
+      return { item: item.id, side: "on", along: 0.5, point: [(west + east) * 50, (north + south) * 50] };
+    }
+    const candidates = [
+      { side: "north", distance: Math.abs(y - north), along: Math.min(1, Math.max(0, (x - west) / Math.max(0.001, east - west))) },
+      { side: "south", distance: Math.abs(y - south), along: Math.min(1, Math.max(0, (x - west) / Math.max(0.001, east - west))) },
+      { side: "west", distance: Math.abs(x - west), along: Math.min(1, Math.max(0, (y - north) / Math.max(0.001, south - north))) },
+      { side: "east", distance: Math.abs(x - east), along: Math.min(1, Math.max(0, (y - north) / Math.max(0.001, south - north))) },
+    ];
+    for (const candidate of candidates) {
+      if (!best || candidate.distance < best.distance) best = { item: item.id, ...candidate };
+    }
+  }
+  if (!best) return null;
+  const person = { item: best.item, side: best.side, along: best.along };
+  return { item: best.item, side: best.side, along: best.along, point: stagePoint(view, person) };
+}
+
+function stagePersonNode(scene, name) {
+  return $$(`[data-stage-plan][data-scene="${CSS.escape(scene)}"] [data-stage-person]`)
+    .find((node) => node.dataset.stagePerson === name) || null;
+}
+
+function paintStagePerson(node, view, person) {
+  const point = stagePoint(view, person);
+  if (!point || !node) return;
+  const [x, y] = point;
+  const vector = FACING_VECTOR[person.facing] || [0, 0];
+  const line = node.querySelector(".stage-facing");
+  const circle = node.querySelector("circle");
+  const label = node.querySelector("text");
+  if (line) {
+    line.setAttribute("x1", String(x));
+    line.setAttribute("y1", String(y));
+    line.setAttribute("x2", String(x + vector[0] * 7));
+    line.setAttribute("y2", String(y + vector[1] * 7));
+  }
+  if (circle) {
+    circle.setAttribute("cx", String(x));
+    circle.setAttribute("cy", String(y));
+  }
+  if (label) {
+    label.setAttribute("x", String(x));
+    label.setAttribute("y", String(y + 0.15));
+  }
+  node.dataset.stageItem = person.item || "";
+  node.dataset.stageSide = person.side || "";
+  node.dataset.stageAlong = String(person.along ?? "");
+  const title = node.querySelector("title");
+  if (title) title.textContent = `${person.name} · ${person.posture === "sit" ? "坐" : "站"} · ${STAGE_SIDE_LABEL[person.side] || ""} · 面朝 ${STAGE_FACING_LABEL[person.facing] || person.facing}`;
+}
+
+function selectStagePerson(scene, name) {
+  const plan = $(`[data-stage-plan][data-scene="${CSS.escape(scene)}"]`);
+  if (!plan) return;
+  for (const node of $$("[data-stage-person]", plan)) node.classList.toggle("sel", node.dataset.stagePerson === name);
+  for (const row of $$("[data-stage-person-tools]", plan)) row.classList.toggle("sel", row.dataset.stagePersonTools === name);
+  plan.dataset.stageSelected = name;
+}
+
+function markStageDirty(scene, message = "有未保存的站位调整") {
+  const plan = $(`[data-stage-plan][data-scene="${CSS.escape(scene)}"]`);
+  const draft = S.stagingDrafts.get(scene);
+  if (draft) { draft.dirty = true; draft.revision += 1; }
+  if (plan) {
+    const status = $("[data-stage-status]", plan);
+    if (status) status.textContent = message;
+    const save = $("[data-stage-save]", plan);
+    if (save) save.disabled = Boolean(draft?.saving);
+  }
+}
+
+function repaintStage(scene) {
+  const block = stageBlock(scene);
+  const plan = $(`[data-stage-plan][data-scene="${CSS.escape(scene)}"]`);
+  const draft = S.stagingDrafts.get(scene);
+  if (!block || !plan || !draft) return;
+  for (const person of draft.positions.filter((item) => item.present)) {
+    paintStagePerson(stagePersonNode(scene, person.name), block.view, person);
+  }
+  const selected = plan.dataset.stageSelected || draft.positions.find((item) => item.present)?.name;
+  if (selected) selectStagePerson(scene, selected);
+  const postureGroup = $(`[data-stage-person-tools="${CSS.escape(selected || "")}"]`, plan);
+  if (postureGroup) {
+    for (const button of $$("[data-stage-posture]", postureGroup)) {
+      button.setAttribute("aria-pressed", String(button.dataset.stagePosture === draft.positions.find((item) => item.name === selected)?.posture));
+    }
+    const facing = $("[data-stage-facing]", postureGroup);
+    const person = draft.positions.find((item) => item.name === selected);
+    if (facing && person) facing.value = person.facing;
+  }
+}
+
+function svgPoint(svg, event) {
+  const point = svg.createSVGPoint();
+  point.x = event.clientX;
+  point.y = event.clientY;
+  const matrix = svg.getScreenCTM();
+  if (!matrix) return null;
+  return point.matrixTransform(matrix.inverse());
+}
+
+function onStagePointerDown(event) {
+  const handle = event.target.closest?.("[data-stage-person]");
+  if (!handle || event.button !== 0) return;
+  const plan = handle.closest("[data-stage-plan]");
+  const svg = plan?.querySelector(".stage-plan-svg");
+  const block = plan ? stageBlock(plan.dataset.scene) : null;
+  if (!plan || !svg || !block) return;
+  event.preventDefault();
+  stageDraft(block);
+  selectStagePerson(block.scene, handle.dataset.stagePerson);
+  S.stageDrag = { scene: block.scene, name: handle.dataset.stagePerson, pointerId: event.pointerId };
+  svg.setPointerCapture?.(event.pointerId);
+}
+
+function onStagePointerMove(event) {
+  const drag = S.stageDrag;
+  if (!drag || drag.pointerId !== event.pointerId) return;
+  const plan = $(`[data-stage-plan][data-scene="${CSS.escape(drag.scene)}"]`);
+  const svg = plan?.querySelector(".stage-plan-svg");
+  const block = stageBlock(drag.scene);
+  const draft = S.stagingDrafts.get(drag.scene);
+  if (!plan || !svg || !block || !draft) return;
+  const raw = svgPoint(svg, event);
+  if (!raw) return;
+  const x = Math.min(1, Math.max(0, raw.x / 100));
+  const y = Math.min(1, Math.max(0, raw.y / 100));
+  const placement = stagePlacement(block.view, x, y);
+  const person = draft.positions.find((item) => item.name === drag.name);
+  if (!placement || !person) return;
+  event.preventDefault();
+  Object.assign(person, { item: placement.item, side: placement.side, along: placement.along });
+  paintStagePerson(stagePersonNode(drag.scene, drag.name), block.view, person);
+  markStageDirty(drag.scene);
+}
+
+function endStagePointer(event) {
+  const drag = S.stageDrag;
+  if (!drag || (event && drag.pointerId !== event.pointerId)) return;
+  const plan = $(`[data-stage-plan][data-scene="${CSS.escape(drag.scene)}"]`);
+  const svg = plan?.querySelector(".stage-plan-svg");
+  try { svg?.releasePointerCapture?.(drag.pointerId); } catch (_error) { /* already released */ }
+  S.stageDrag = null;
+}
+
+function onStageKeydown(event) {
+  const handle = event.target.closest?.("[data-stage-person]");
+  if (!handle) return;
+  const plan = handle.closest("[data-stage-plan]");
+  const block = plan ? stageBlock(plan.dataset.scene) : null;
+  const draft = block ? stageDraft(block) : null;
+  const person = draft?.positions.find((item) => item.name === handle.dataset.stagePerson);
+  if (!block || !draft || !person) return;
+  const step = event.shiftKey ? 0.08 : 0.02;
+  let changed = false;
+  if (person.side !== "on" && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
+    const direction = ["ArrowLeft", "ArrowUp"].includes(event.key) ? -1 : 1;
+    person.along = Math.min(1, Math.max(0, Number(person.along) + direction * step));
+    changed = true;
+  } else if (event.key === "Home" && person.side !== "on") {
+    person.along = 0;
+    changed = true;
+  } else if (event.key === "End" && person.side !== "on") {
+    person.along = 1;
+    changed = true;
+  }
+  if (!changed) return;
+  event.preventDefault();
+  selectStagePerson(block.scene, person.name);
+  paintStagePerson(handle, block.view, person);
+  markStageDirty(block.scene, "站位已调整，尚未保存");
+}
+
+function stagePlanHTML(block, E) {
+  const view = block.view;
+  if (!view || !view.items.length) return "";
+  const draft = stageDraft(block, E);
+  const image = E.media?.stageViews?.[view.id];
+  const items = view.items.map((item, index) => {
+    const [west, north, east, south] = item.plan;
+    const x = west * 100, y = north * 100, w = (east - west) * 100, h = (south - north) * 100;
+    const title = `<title>${esc(item.name)}${item.seat ? " · 可坐/可站" : ""}</title>`;
+    const shape = item.round
+      ? `<ellipse class="stage-item ${item.seat ? "seat" : ""}" cx="${x + w / 2}" cy="${y + h / 2}" rx="${w / 2}" ry="${h / 2}">${title}</ellipse>`
+      : `<rect class="stage-item ${item.seat ? "seat" : ""}" x="${x}" y="${y}" width="${w}" height="${h}" rx="1.5">${title}</rect>`;
+    const label = w >= 13 && h >= 7
+      ? `<text class="stage-item-label" x="${x + w / 2}" y="${y + h / 2}" text-anchor="middle" dominant-baseline="middle">${esc(item.name.slice(0, 8))}</text>`
+      : "";
+    return `<g data-item="${esc(item.id)}">${shape}${label}</g>`;
+  }).join("");
+  const people = draft.positions.filter((person) => person.present).map((person, index) => {
+    const point = stagePoint(view, person) || [50, 50];
+    const [x, y] = point;
+    const vector = FACING_VECTOR[person.facing] || [0, 0];
+    const ex = x + vector[0] * 7, ey = y + vector[1] * 7;
+    return `<g class="stage-person p${index % 6}" data-person="${esc(person.name)}" data-stage-person="${esc(person.name)}" data-stage-item="${esc(person.item || "")}" data-stage-side="${esc(person.side || "")}" data-stage-along="${esc(String(person.along ?? ""))}" tabindex="0" role="button" aria-label="${esc(`${person.name}，${person.posture === "sit" ? "坐" : "站"}，${STAGE_SIDE_LABEL[person.side] || ""}，面朝 ${STAGE_FACING_LABEL[person.facing] || person.facing}。可用方向键沿线移动`)}">
+      <title>${esc(`${person.name} · ${person.posture === "sit" ? "坐" : "站"} · 面朝 ${person.facing}`)}</title>
+      <line class="stage-facing" x1="${x}" y1="${y}" x2="${ex}" y2="${ey}"></line>
+      <circle cx="${x}" cy="${y}" r="3.2"></circle>
+      <text x="${x}" y="${y + 0.15}" text-anchor="middle" dominant-baseline="middle">${esc(person.name.slice(0, 1))}</text>
+    </g>`;
+  }).join("");
+  const absent = draft.positions.filter((person) => !person.present).map((person) => person.name);
+  const aria = `${view.location || "场景"}俯视站位：${draft.positions.filter((person) => person.present).map((person) => person.name).join("、")}`;
+  const personTools = draft.positions.filter((person) => person.present).map((person) => `<div class="stage-person-tools" data-stage-person-tools="${esc(person.name)}" data-stage-tools="${esc(person.name)}">
+    <b>${esc(person.name)}</b>
+    <div class="seg" role="group" aria-label="${esc(person.name)}姿态">
+      <button type="button" data-stage-posture="stand" aria-pressed="${person.posture === "stand"}">站</button>
+      <button type="button" data-stage-posture="sit" aria-pressed="${person.posture === "sit"}">坐</button>
+    </div>
+    <label>朝向<select data-stage-facing="${esc(person.name)}">${Object.entries(STAGE_FACING_LABEL).map(([value, label]) => `<option value="${value}" ${person.facing === value ? "selected" : ""}>${label}</option>`).join("")}</select></label>
+  </div>`).join("");
+  return `<figure class="stage-plan editable" data-stage-plan data-scene="${esc(block.scene)}">
+    <div class="stage-plan-head"><div><span class="eyebrow">俯视站位</span><b>${esc(view.location || view.label || view.id)}</b></div><span class="mono">${esc(view.id)}</span></div>
+    <div class="stage-plan-stage">
+      <svg class="stage-plan-svg" viewBox="0 0 100 100" role="img" aria-label="${esc(aria)}">
+        ${image ? `<image href="${esc(mediaUrl(image))}" x="0" y="0" width="100" height="100" preserveAspectRatio="xMidYMid slice" opacity=".28"></image>` : ""}
+        <rect class="stage-room" x="1" y="1" width="98" height="98" rx="2"></rect>
+        ${items}${people}
+      </svg>
+    </div>
+    <figcaption>
+      <div class="stage-legend"><span><i class="seat"></i>可坐/可站</span><span><i></i>固定物件</span><span><i class="person"></i>人物与朝向</span></div>
+      ${view.screenDirection ? `<p>${esc(view.screenDirection)}</p>` : ""}
+      ${absent.length ? `<p class="muted small">开场未在场：${esc(absent.join("、"))}</p>` : ""}
+    </figcaption>
+    <div class="stage-editor">
+      ${personTools}
+      <div class="stage-extras-editor">
+        <label>群演<input type="number" min="0" max="200" step="1" inputmode="numeric" data-stage-extras value="${draft.extras}"></label>
+        <label>位置<input type="text" maxlength="120" data-stage-extras-where value="${esc(draft.extrasWhere)}" placeholder="例如：门口两侧"></label>
+      </div>
+      <div class="stage-savebar"><span class="muted small" data-stage-status role="status">${draft.conflict ? "分镜已在别处修改。先复制调整，再载入最新站位合并。" : draft.saving ? "正在保存…" : draft.dirty ? "有未保存的站位调整" : "拖动人物，或用方向键沿线调整"}</span><div class="stage-save-actions"><button class="btn sm primary" type="button" data-stage-save ${draft.dirty && !draft.saving ? "" : "disabled"}>${icon("check")}保存站位</button><button class="btn sm" type="button" data-stage-copy>复制我的站位</button><button class="btn sm" type="button" data-stage-reload>载入最新站位</button></div></div>
+    </div>
+  </figure>`;
+}
+
+function blockingHTML(blocks, E) {
   if (!blocks.length) return "";
-  return `<div class="blocking" id="boardBlocking">${blocks.map((block) => `<section class="card blocking-card" data-scene="${esc(block.scene)}"><h3>场景站位 · ${esc(sceneShort(block.scene))}${block.place ? ` ${esc(block.place)}` : ""}</h3>${blockingRows(block)}</section>`).join("")}</div>`;
+  return `<div class="blocking" id="boardBlocking">${blocks.map((block) => `<section class="card blocking-card ${block.view ? "has-plan" : ""}" data-scene="${esc(block.scene)}"><h3>场景站位 · ${esc(sceneShort(block.scene))}${block.place ? ` ${esc(block.place)}` : ""}</h3>${stagePlanHTML(block, E)}${blockingRows(block)}</section>`).join("")}</div>`;
 }
 
 function viewBoard(row, E, arg, q) {
@@ -1290,7 +1664,7 @@ function viewBoard(row, E, arg, q) {
     ${editButton(E.docs["分镜.md"])}</div></div>
   ${problemNotices(E)}
   ${E.board.note ? `<p class="muted small" id="boardNote">${esc(E.board.note)}</p>` : ""}
-  ${blockingHTML((E.board.blocking || []).filter((block) => !sceneFilter || block.scene === sceneFilter))}
+  ${blockingHTML((E.board.blocking || []).filter((block) => !sceneFilter || block.scene === sceneFilter), E)}
   <div class="metrics" id="boardMetrics">
     ${metric("总时长", `${num(C.total)}<small> 秒</small>`, C.target ? `目标 ${C.target} 秒 · ${gapText(C.total, C.target)}` : "没有设每集目标", null)}
     ${metric("平均镜长", `${num(M.avg)}<small> 秒</small>`, P ? `目标 ${num(P.target_avg_shot_seconds)} 秒 · ${gapText(M.avg, P.target_avg_shot_seconds)}` : "没有接受节奏档案", null)}
@@ -1367,6 +1741,33 @@ function presence(C, item) {
   return C.shots.filter((shot) => shot.basis.some((entry) => entry.name === item.name)).map((shot) => shot.id);
 }
 
+function referenceVersionsHTML(references, media = {}) {
+  const groups = references?.groups || [];
+  if (!groups.length) return "";
+  return `<section class="reference-versions" aria-labelledby="referenceVersionsTitle">
+    <div class="section-t"><div><h3 id="referenceVersionsTitle">参考图版本</h3><span class="muted small">当前图片、派生关系和过期原因</span></div></div>
+    <div class="reference-groups">${groups.map((group) => {
+      const parentByJob = new Map(group.views.filter((view) => view.depends_on_job_id).map((view) => [view.depends_on_job_id, view]));
+      return `<section class="reference-group" data-reference-group="${esc(group.id)}">
+        <div class="reference-group-head"><h4>${esc(group.id)}</h4><span>${group.views.length} 个视图</span></div>
+        <div class="reference-view-list">${group.views.map((view) => {
+          const image = media?.[view.output];
+          const stale = view.status !== "current";
+          const parent = parentByJob.get(view.depends_on_job_id);
+          return `<article class="reference-view ${stale ? "stale" : ""}" data-reference-view="${esc(view.id)}">
+            <div class="reference-thumb">${image ? `<img src="${esc(mediaUrl(view.output))}" alt="${esc(`${group.id} ${view.id} v${view.version || "?"}`)}" loading="lazy">` : `${icon("grid")}<span>${esc(view.output ? "图片缺失" : "尚无输出")}</span>`}</div>
+            <div class="reference-copy">
+              <div class="reference-title"><b>${esc(view.id)}</b><span class="mono">v${esc(String(view.version ?? "?"))}</span><span class="status ${stale ? "bad" : "ok"}">${icon(stale ? "alert" : "check")}${stale ? "已过期" : "当前"}</span></div>
+              <div class="pills"><span class="pill">${view.stage === "anchor" ? "锚点" : "派生"}</span>${parent ? `<span class="pill">父图 ${esc(parent.id)}</span>` : ""}${view.history?.length ? `<span class="pill">历史 ${view.history.length}</span>` : ""}</div>
+              ${stale && view.reasons?.length ? `<ul class="reference-reasons">${view.reasons.map((reason) => `<li>${esc(reason)}</li>`).join("")}</ul>` : ""}
+            </div>
+          </article>`;
+        }).join("")}</div>
+      </section>`;
+    }).join("")}</div>
+  </section>`;
+}
+
 function viewSettings(row, E) {
   if (!row.has.settings) return missingView(row, "settings");
   if (!E.settings) return rawFallback(E, E.docs["视觉设定.md"], "视觉设定");
@@ -1391,6 +1792,7 @@ function viewSettings(row, E) {
   return `<div class="wrap" data-view="settings">
     <div class="head"><div><h2>视觉设定</h2><div class="sub">${esc(settings.form)}</div></div><div class="actions">${editButton(E.docs["视觉设定.md"])}</div></div>
     ${problemNotices(E)}
+    ${referenceVersionsHTML(E.references, E.media?.referenceOutputs)}
     ${settings.era.period || settings.era.facets.length ? `<section class="card era"><div class="era-l"><div class="eyebrow">时代锚点</div><div class="p">${esc(settings.era.period)}</div><div class="f">画面里的一切都要属于这个年代</div></div>
       <div class="era-r">${settings.era.facets.map((facet) => `<div><div class="k">${esc(facet.k)}</div><div class="v">${esc(facet.v)}</div></div>`).join("")}</div></section>` : ""}
     ${["人物", "造型", "地点", "道具"].map((category) => { const items = settings.items.filter((item) => item.cat === category); if (!items.length) return "";
@@ -1651,21 +2053,22 @@ async function openEditor(q, sequence) {
     const data = await api(`/api/file?${query({ project: S.project, path })}`);
     if (sequence !== S.renderSequence) return;
     const editable = Boolean(data.writable);
-    S.edit = { path, version: data.version, original: data.content, dirty: false, saving: false, writable: editable };
+    const content = data.content.replace(/\r\n?/g, "\n");
+    S.edit = { path, version: data.version, original: content, dirty: false, saving: false, writable: editable };
     const editor = $("#editor");
-    editor.value = data.content;
+    editor.value = content;
     editor.disabled = !editable;
     editor.addEventListener("input", () => setDirty(editor.value !== S.edit.original));
     setDirty(false);
     $("#editState").textContent = editable ? "已载入" : "只读";
     if (at) {
-      const index = data.content.indexOf(`## ${at}`);
+      const index = content.indexOf(`## ${at}`);
       if (index >= 0) {
         // Measure the wrapped height of everything above the heading, so the
         // shot lands at the top however long its preceding lines wrap.
-        editor.value = data.content.slice(0, index);
+        editor.value = content.slice(0, index);
         const above = editor.scrollHeight;
-        editor.value = data.content;
+        editor.value = content;
         editor.focus({ preventScroll: true });
         editor.setSelectionRange(index, index);
         editor.scrollTop = Math.max(0, above - 40);
@@ -1720,6 +2123,89 @@ async function save() {
     const conflict = error.status === 409 || /changed since it was opened/.test(error.message);
     $("#editNotice").innerHTML = `<div class="notice danger" id="saveError" data-conflict="${conflict ? 1 : 0}">${icon("alert")}<span>${esc(conflict ? "这份文件在别处改过了，你的修改没有保存。先复制你的修改，再载入最新版本合并。" : friendlyFailure(error.message))}</span>
       ${conflict ? `<span class="actions"><button class="btn sm" type="button" data-act="copy-draft">${icon("copy")}复制我的修改</button><button class="btn sm primary" type="button" data-act="reload-latest">载入最新版本</button></span>` : ""}</div>`;
+  }
+}
+
+function hasUnsavedChanges() {
+  return Boolean(S.edit?.dirty || [...S.stagingDrafts.values()].some((draft) => draft.dirty));
+}
+
+function beforeUnload(event) {
+  if (hasUnsavedChanges()) { event.preventDefault(); event.returnValue = ""; }
+}
+
+async function reloadStaging(scene) {
+  const route = parseRoute(location.hash);
+  const project = S.project;
+  const draft = S.stagingDrafts.get(scene);
+  if (!route.ep || draft?.saving) return;
+  if (draft?.dirty && !confirm("载入最新站位会丢掉这场尚未保存的调整。请先复制你的站位。确定载入吗？")) return;
+  const revision = draft?.revision;
+  try {
+    const E = await api(`/api/episode?${query({ project, ep: route.ep })}`);
+    if (S.project !== project || S.stagingDrafts.get(scene) !== draft) return;
+    if (draft?.revision !== revision) { toast("载入期间又有调整，已保留草稿。请复制后重新载入。"); return; }
+    S.stagingDrafts.delete(scene);
+    S.episodes.set(route.ep, E);
+    await render();
+    toast("已载入最新站位。");
+  } catch (error) { toast(friendlyFailure(error.message)); }
+}
+
+async function saveStaging(scene) {
+  const route = parseRoute(location.hash);
+  const project = S.project;
+  const E = route.ep ? S.episodes.get(route.ep) : null;
+  const block = stageBlock(scene);
+  const draft = S.stagingDrafts.get(scene);
+  if (!route.ep || !E || !block || !draft?.dirty || draft.saving) return;
+  const plan = $(`[data-stage-plan][data-scene="${CSS.escape(scene)}"]`);
+  const status = plan ? $("[data-stage-status]", plan) : null;
+  const saveButton = plan ? $("[data-stage-save]", plan) : null;
+  if (!draft.version) {
+    if (status) status.textContent = "无法核对编辑时的分镜版本。请复制调整，再载入最新站位。";
+    return;
+  }
+  const revision = draft.revision;
+  const version = draft.version;
+  const payload = {
+    scene, expectedVersion: version,
+    positions: draft.positions.map((person) => ({
+      name: person.name, present: person.present, item: person.item, side: person.side,
+      along: person.along, posture: person.posture, facing: person.facing,
+    })),
+    extras: draft.extras, extrasWhere: draft.extrasWhere,
+  };
+  draft.saving = true;
+  if (status) status.textContent = "正在保存…";
+  if (saveButton) saveButton.disabled = true;
+  try {
+    const result = await api(`/api/staging?${query({ project, ep: route.ep })}`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+    });
+    if (S.project !== project || S.stagingDrafts.get(scene) !== draft) return;
+    // This successful compare-and-save changed only this scene. Other drafts
+    // based on that same file version can safely follow the returned version.
+    for (const other of S.stagingDrafts.values()) {
+      if (other.episode === route.ep && other.version === version) other.version = result.version;
+    }
+    draft.conflict = false;
+    if (draft.revision === revision) S.stagingDrafts.delete(scene);
+    else draft.version = result.version;
+    S.episodes.delete(route.ep);
+    draft.saving = false;
+    await refreshProject();
+    await render();
+    toast(draft.revision !== revision ? "已保存提交时的站位，后续调整仍待保存。" : result.saved ? "站位已写回分镜.md。" : "站位没有变化。");
+  } catch (error) {
+    if (S.project !== project || S.stagingDrafts.get(scene) !== draft) return;
+    draft.conflict = error.status === 409 || /changed since it was opened/.test(error.message);
+    if (status) status.textContent = draft.conflict
+      ? "分镜已在别处修改。你的调整未保存，请先复制站位，再载入最新版本合并。"
+      : friendlyFailure(error.message);
+  } finally {
+    draft.saving = false;
+    if (saveButton) saveButton.disabled = !draft.dirty;
   }
 }
 
@@ -1929,6 +2415,46 @@ async function onClick(event) {
   if (node.closest("#epMenuBtn")) { episodeMenu(node.closest("#epMenuBtn")); return; }
   if (node.id === "palette") { closePalette(); return; }
   if (node.id === "scrim") { go($("#inspector").dataset.back || location.hash.split("/SHOT-")[0]); return; }
+  const stageCopy = node.closest("[data-stage-copy]");
+  if (stageCopy) {
+    const scene = stageCopy.closest("[data-stage-plan]")?.dataset.scene;
+    const draft = S.stagingDrafts.get(scene);
+    if (draft) {
+      const copied = await writeClipboard(JSON.stringify({ scene, positions: draft.positions, extras: draft.extras, extrasWhere: draft.extrasWhere }, null, 2));
+      toast(copied ? "已复制站位，可交给助手合并到最新分镜。" : "复制失败，请保留当前页面后重试。");
+    }
+    return;
+  }
+  const stageReload = node.closest("[data-stage-reload]");
+  if (stageReload) { await reloadStaging(stageReload.closest("[data-stage-plan]")?.dataset.scene); return; }
+  const stageSave = node.closest("[data-stage-save]");
+  if (stageSave) {
+    const plan = stageSave.closest("[data-stage-plan]");
+    if (plan) await saveStaging(plan.dataset.scene);
+    return;
+  }
+  const posture = node.closest("[data-stage-posture]");
+  if (posture) {
+    const tools = posture.closest("[data-stage-person-tools]");
+    const plan = posture.closest("[data-stage-plan]");
+    const block = plan ? stageBlock(plan.dataset.scene) : null;
+    const draft = block ? stageDraft(block) : null;
+    const person = draft?.positions.find((item) => item.name === tools?.dataset.stagePersonTools);
+    if (draft && person && stagePersonNode(block.scene, person.name)) {
+      person.posture = posture.dataset.stagePosture;
+      for (const button of $$("[data-stage-posture]", tools)) button.setAttribute("aria-pressed", String(button === posture));
+      selectStagePerson(block.scene, person.name);
+      paintStagePerson(stagePersonNode(block.scene, person.name), block.view, person);
+      markStageDirty(block.scene);
+    }
+    return;
+  }
+  const personTools = node.closest("[data-stage-person-tools]");
+  if (personTools) {
+    const plan = personTools.closest("[data-stage-plan]");
+    if (plan) selectStagePerson(plan.dataset.scene, personTools.dataset.stagePersonTools);
+    return;
+  }
   const scope = node.closest("[data-scope]");
   if (scope) { S.palette.scope = scope.dataset.scope; $$(".pal-scope .pill").forEach((pill) => pill.classList.toggle("on", pill === scope)); S.palette.sel = 0; scheduleSearch(0); return; }
   const copy = node.closest("[data-copy]");
@@ -1997,7 +2523,7 @@ function onKey(event) {
   }
   if (event.key === "/" && !typing && $("#palette").hidden) { event.preventDefault(); openPalette(); return; }
   const route = parseRoute(location.hash);
-  if (route.view === "board" && route.arg && !typing && $("#palette").hidden && ["ArrowRight", "ArrowLeft", "j", "k"].includes(event.key)) {
+  if (route.view === "board" && route.arg && !typing && !event.target.closest?.("[data-stage-person]") && $("#palette").hidden && ["ArrowRight", "ArrowLeft", "j", "k"].includes(event.key)) {
     const E = S.episodes.get(route.ep);
     const shots = E?.board?.shots || [];
     const index = shots.findIndex((shot) => shot.id === route.arg);
@@ -2020,8 +2546,43 @@ function onHover(event) {
   tip.style.top = `${Math.max(8, box.top - tip.offsetHeight - 8)}px`;
 }
 
+function onChange(event) {
+  if (event.target.id === "projectSelect") {
+    selectProject(event.target.value);
+    return;
+  }
+  const facing = event.target.closest?.("[data-stage-facing]");
+  if (!facing) return;
+  const tools = facing.closest("[data-stage-person-tools]");
+  const plan = facing.closest("[data-stage-plan]");
+  const block = plan ? stageBlock(plan.dataset.scene) : null;
+  const draft = block ? stageDraft(block) : null;
+  const person = draft?.positions.find((item) => item.name === tools?.dataset.stagePersonTools);
+  if (!person || !block) return;
+  person.facing = facing.value;
+  selectStagePerson(block.scene, person.name);
+  paintStagePerson(stagePersonNode(block.scene, person.name), block.view, person);
+  markStageDirty(block.scene);
+}
+
+function onInput(event) {
+  const plan = event.target.closest?.("[data-stage-plan]");
+  const block = plan ? stageBlock(plan.dataset.scene) : null;
+  const draft = block ? stageDraft(block) : null;
+  if (!block || !draft) return;
+  if (event.target.matches("[data-stage-extras]")) {
+    const number = Number(event.target.value);
+    draft.extras = Number.isInteger(number) && number >= 0 && number <= 200 ? number : 0;
+    markStageDirty(block.scene);
+  }
+  if (event.target.matches("[data-stage-extras-where]")) {
+    draft.extrasWhere = String(event.target.value).slice(0, 120);
+    markStageDirty(block.scene);
+  }
+}
+
 function onHashChange() {
-  if (S.edit?.dirty && !confirm("当前修改还没有保存，确认离开吗？")) {
+  if (hasUnsavedChanges() && !confirm("当前修改还没有保存，确认离开吗？")) {
     history.replaceState(null, "", S.lastHash);
     return;
   }
@@ -2030,7 +2591,8 @@ function onHashChange() {
 }
 
 async function selectProject(id) {
-  if (S.edit?.dirty && !confirm("当前修改还没有保存，确认离开吗？")) { render(); return; }
+  if (id === S.project) return;
+  if (hasUnsavedChanges() && !confirm("当前修改还没有保存，确认离开吗？")) { render(); return; }
   S.edit = null;
   $("#view").dataset.state = "loading";
   try {
@@ -2072,11 +2634,17 @@ async function refreshOnReturn() {
 function start() {
   document.addEventListener("click", (event) => { onClick(event); });
   document.addEventListener("keydown", onKey);
+  document.addEventListener("keydown", onStageKeydown);
   document.addEventListener("mouseover", onHover);
-  document.addEventListener("change", (event) => { if (event.target.id === "projectSelect") selectProject(event.target.value); });
+  document.addEventListener("change", onChange);
+  document.addEventListener("input", onInput);
+  document.addEventListener("pointerdown", onStagePointerDown);
+  document.addEventListener("pointermove", onStagePointerMove);
+  document.addEventListener("pointerup", endStagePointer);
+  document.addEventListener("pointercancel", endStagePointer);
   addEventListener("hashchange", onHashChange);
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") refreshOnReturn(); });
-  addEventListener("beforeunload", (event) => { if (S.edit?.dirty) { event.preventDefault(); event.returnValue = ""; } });
+  addEventListener("beforeunload", beforeUnload);
   if (typeof matchMedia === "function") matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { if (S.theme === "auto") renderTop(parseRoute(location.hash)); });
   boot();
 }

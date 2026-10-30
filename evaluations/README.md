@@ -91,6 +91,11 @@ manifest schema v5、corpus schema v3、config schema v3 与 receipt schema v2 �
 
 ## 每次发布前
 
+2026-10-30 的实测范围、浏览器截图结论、Python 3.9 证据与剩余外部闸门见
+[发布候选评估](release-candidate-2026-10-30.md)。
+同日后续的[仓库审查与关闭记录](repository-audit-2026-10-30.md)记录六类缺陷的修复、跨功能消费情况、
+浏览器回归和离线包清单验证；历史测试结果与本轮关闭证据分开记录。
+
 分别核对既有回归夹具和当前流程。
 
 **回归闸门**（脚本，随测试跑）：

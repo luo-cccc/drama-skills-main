@@ -1,0 +1,59 @@
+{
+  "schema_version": "1.0",
+  "source_inventory": "shuohao-skills-2.2.1.json",
+  "adaptations": [
+    {
+      "skill": "short-drama",
+      "targets": [
+        "scripts/creator_markdown_check.py",
+        "scripts/creator_views.py",
+        "scripts/dashboard_server.py",
+        "assets/dashboard/app.js"
+      ],
+      "upstream": [
+        "skills/novel-staging/scripts/novel-staging.mjs",
+        "skills/novel-script/scripts/novel-script.mjs",
+        "skills/novel-art/scripts/novel-art.mjs",
+        "skills/novel-storyboard/scripts/novel-storyboard.mjs"
+      ],
+      "scope": "空间几何、站位、节拍/资产诊断和只读派生视图的 Python / JavaScript 重实现；原 Dashboard 与安全文件访问仍为本仓原创。"
+    },
+    {
+      "skill": "short-drama-storyboard",
+      "targets": [
+        "scripts/staging_tool.py",
+        "scripts/storyboard_pack.py"
+      ],
+      "upstream": [
+        "skills/novel-staging/scripts/novel-staging.mjs",
+        "skills/novel-storyboard/scripts/novel-storyboard.mjs"
+      ],
+      "scope": "Markdown 站位校验、开场走位、缓存与离线投产包的 Python 重实现。"
+    },
+    {
+      "skill": "short-drama-produce",
+      "targets": [
+        "scripts/production_tool.py",
+        "scripts/provider_adapters.py"
+      ],
+      "upstream": [
+        "skills/character-refs/scripts/character-refs.mjs",
+        "skills/character-refs/scripts/core.mjs",
+        "skills/character-refs/scripts/models.mjs",
+        "skills/character-refs/scripts/png.mjs"
+      ],
+      "scope": "参考图锚点/派生依赖、版本与模型适配经验的 Python 重实现；确认、审计和原子落盘仍为本仓原创。"
+    }
+  ],
+  "repository_tools": [
+    {
+      "target": "tools/migrate_shuohao.py",
+      "upstream": [
+        "skills/novel-script/scripts/novel-script.mjs",
+        "skills/novel-storyboard/scripts/novel-storyboard.mjs",
+        "skills/novel-staging/scripts/novel-staging.mjs"
+      ],
+      "scope": "一次性 JSON 到 Markdown 迁移，按上游字段契约重实现，不进入独立技能运行包。"
+    }
+  ]
+}

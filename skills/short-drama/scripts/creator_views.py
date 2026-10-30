@@ -269,6 +269,23 @@ SHOT_TITLE_RE = re.compile(r"^## \S+ · (.+)$", re.MULTILINE)
 NOTE_RE = re.compile(r"^> (.+)$", re.MULTILINE)
 BLOCKING_HEADING_RE = re.compile(r"场景站位 · (\S+)(?: · (.+))?")
 BULLET_FIELD_RE = re.compile(r"^- ([^：\n]+)：(.+)$", re.MULTILINE)
+SPACE_VIEW_HEADING_RE = re.compile(
+    r"^### 空间视图 · (VIEW-[A-Z0-9-]+)(?: · ([^\r\n]+))?\r?$",
+    re.MULTILINE,
+)
+SPACE_ITEM_RE = re.compile(
+    r"^[ \t]*[-*+][ \t]*平面物件：(ITEM-[A-Z0-9-]+)《([^》]+)》"
+    r"（图框：([^；]+)；平面：([^；]+)；可坐：(是|否)(?:；圆：(是|否))?）\r?$",
+    re.MULTILINE,
+)
+PERSON_POSITION_RE = re.compile(
+    r"^[ \t]*[-*+][ \t]*人物位置：([^｜\r\n]+)｜([^\r\n]*)\r?$",
+    re.MULTILINE,
+)
+PLAN_GAP = 0.04
+STAGE_IMAGE_RE = re.compile(
+    r"·\s*([^；\n]+?\.(?:png|jpe?g|webp))《", re.IGNORECASE
+)
 REF_STATES = {
     "t2v": "文生视频（创作者已选择不用图）",
     "pending": "待补参考图",
@@ -305,7 +322,9 @@ def _ref_state(value: str, slots: list[dict[str, Any]]) -> str:
     return "bound" if slots else "none"
 
 
-def parse_storyboard(text: str) -> dict[str, Any]:
+def parse_storyboard(
+    text: str, space_views: Optional[list[dict[str, Any]]] = None
+) -> dict[str, Any]:
     head = text.split("\n## ", 1)[0]
     note = NOTE_RE.search(head)
     shots = []
@@ -355,26 +374,249 @@ def parse_storyboard(text: str) -> dict[str, Any]:
         raise ValueError("没有找到 `## SHOT-EP001-001 · 标题` 这样的镜头")
     return {
         "note": note.group(1).strip() if note else "",
-        "blocking": parse_scene_blocking(check._storyboard_head(text)),
+        "blocking": parse_scene_blocking(
+            check._storyboard_head(text), space_views or []
+        ),
         "shots": shots,
     }
 
 
-def parse_scene_blocking(head: str) -> list[dict[str, Any]]:
+def _coordinates(value: str, count: int) -> Optional[list[float]]:
+    try:
+        found = [float(part.strip()) for part in re.split(r"[,，]", value)]
+    except ValueError:
+        return None
+    if len(found) != count or any(item < 0 or item > 1 for item in found):
+        return None
+    return found
+
+
+def parse_space_views(text: str) -> list[dict[str, Any]]:
+    """Structured location plans used by the storyboard's staging view."""
+
+    views: list[dict[str, Any]] = []
+    for match in SPACE_VIEW_HEADING_RE.finditer(text):
+        following = re.search(r"^#{2,3} ", text[match.end() :], re.MULTILINE)
+        body = text[
+            match.end() :
+            match.end() + following.start() if following is not None else None
+        ]
+        location_heads = list(
+            re.finditer(
+                r"^## 地点 · ([^\n]+)$", text[: match.start()], re.MULTILINE
+            )
+        )
+        fields = {
+            key.strip(): value.strip()
+            for key, value in BULLET_FIELD_RE.findall(body)
+        }
+        image = ""
+        image_match = check.REF_RE.search(fields.get("图片", ""))
+        if image_match is not None:
+            image = image_match.group(3)
+        else:
+            loose_image = STAGE_IMAGE_RE.search(fields.get("图片", ""))
+            if loose_image is not None:
+                image = loose_image.group(1).strip()
+        items = []
+        for item in SPACE_ITEM_RE.finditer(body):
+            identifier, name, raw_box, raw_plan, seatable, round_value = item.groups()
+            box = None if raw_box.strip() == "无" else _coordinates(raw_box, 4)
+            plan = _coordinates(raw_plan, 4)
+            if plan is None:
+                continue
+            items.append(
+                {
+                    "id": identifier,
+                    "name": name.strip(),
+                    "box": box,
+                    "plan": plan,
+                    "seat": seatable == "是",
+                    "round": round_value == "是",
+                }
+            )
+        views.append(
+            {
+                "id": match.group(1),
+                "label": (match.group(2) or "").strip(),
+                "location": (
+                    location_heads[-1].group(1).strip() if location_heads else ""
+                ),
+                "image": image,
+                "readFrom": fields.get("认图来源", ""),
+                "screenDirection": fields.get("屏幕方向", ""),
+                "items": items,
+            }
+        )
+    return views
+
+
+def _position_fields(value: str) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for part in value.split("｜"):
+        key, separator, raw = part.partition("：")
+        if separator:
+            fields[key.strip()] = raw.strip()
+    return fields
+
+
+def _plan_point(view: dict[str, Any], fields: dict[str, str]) -> Optional[list[float]]:
+    item = next(
+        (entry for entry in view["items"] if entry["id"] == fields.get("物")),
+        None,
+    )
+    if item is None:
+        return None
+    west, north, east, south = item["plan"]
+    side = fields.get("侧", "")
+    try:
+        along = float(fields.get("沿线", ""))
+    except ValueError:
+        return None
+    if side == "on":
+        x, y = (west + east) / 2, (north + south) / 2
+    elif side in {"north", "south"}:
+        x = west + (east - west) * along
+        y = north - PLAN_GAP if side == "north" else south + PLAN_GAP
+    elif side in {"west", "east"}:
+        x = west - PLAN_GAP if side == "west" else east + PLAN_GAP
+        y = north + (south - north) * along
+    else:
+        return None
+    return [round(min(0.97, max(0.03, x)), 4), round(min(0.97, max(0.03, y)), 4)]
+
+
+def _scene_positions(view: dict[str, Any], body: str) -> list[dict[str, Any]]:
+    positions = []
+    for match in PERSON_POSITION_RE.finditer(body):
+        name = match.group(1).strip()
+        fields = _position_fields(match.group(2))
+        if fields.get("在场") == "否":
+            positions.append(
+                {
+                    "name": name,
+                    "present": False,
+                    "item": "",
+                    "side": "",
+                    "along": None,
+                    "posture": "",
+                    "facing": "",
+                    "point": None,
+                }
+            )
+            continue
+        point = _plan_point(view, fields)
+        positions.append(
+            {
+                "name": name,
+                "present": True,
+                "item": fields.get("物", ""),
+                "side": fields.get("侧", ""),
+                "along": fields.get("沿线", ""),
+                "posture": fields.get("姿态", ""),
+                "facing": fields.get("朝向", ""),
+                "point": point,
+            }
+        )
+    return positions
+
+
+def parse_scene_blocking(
+    head: str, space_views: Optional[list[dict[str, Any]]] = None
+) -> list[dict[str, Any]]:
     """`## 场景站位 · <scene> · <place>` blocks: the staging every shot of a scene inherits."""
 
     blocks = []
+    view_by_id = {view["id"]: view for view in (space_views or [])}
     for section in re.split(r"(?m)^## ", head)[1:]:
         heading, _, body = section.partition("\n")
         match = BLOCKING_HEADING_RE.fullmatch(heading.strip())
         if not match:
             continue
+        rows = [[key.strip(), value.strip()] for key, value in BULLET_FIELD_RE.findall(body)]
+        fields = dict(rows)
+        view = view_by_id.get(fields.get("空间视图", ""))
+        extras = re.search(
+            r"^- 群演：([0-9]+)(?:｜(.*))?$", body, re.MULTILINE
+        )
         blocks.append({
             "scene": match.group(1),
             "place": (match.group(2) or "").strip(),
-            "rows": [[key.strip(), value.strip()] for key, value in BULLET_FIELD_RE.findall(body)],
+            "rows": rows,
+            "view": view,
+            "positions": _scene_positions(view, body) if view else [],
+            "extras": int(extras.group(1)) if extras else 0,
+            "extrasWhere": (extras.group(2) or "").strip() if extras else "",
         })
     return blocks
+
+
+def render_scene_block(
+    storyboard: str,
+    scene_id: str,
+    positions: list[dict[str, Any]],
+    extras: int,
+    extras_where: str,
+) -> str:
+    """Rewrite one structured scene block while preserving every other line."""
+
+    newline = "\r\n" if "\r\n" in storyboard else "\n"
+    heading = re.compile(
+        r"(?m)^##[ \t　]+场景站位[ \t　]*·[ \t　]*"
+        + re.escape(scene_id)
+        + r"[ \t　]*·[^\r\n]*\r?$"
+    )
+    matches = list(heading.finditer(storyboard))
+    if len(matches) != 1:
+        raise ValueError("scene staging block is missing or duplicated")
+    start = matches[0].start()
+    following = re.search(r"(?m)^##[ \t　]+", storyboard[matches[0].end() :])
+    end = (
+        matches[0].end() + following.start()
+        if following is not None
+        else len(storyboard)
+    )
+    block = storyboard[start:end]
+    block_lines = block.splitlines()
+    heading_line = block_lines[0]
+    person_lines = [
+        (
+            f"- 人物位置：{position['name']}｜在场：否"
+            if not position["present"]
+            else (
+                f"- 人物位置：{position['name']}｜物：{position['item']}"
+                f"｜侧：{position['side']}｜沿线：{float(position['along']):.2f}"
+                f"｜姿态：{position['posture']}｜朝向：{position['facing']}"
+            )
+        )
+        for position in positions
+    ]
+    extras_line = f"- 群演：{extras}｜{extras_where}" if extras else ""
+    rebuilt = [heading_line]
+    inserted_people = False
+    inserted_extras = False
+    for raw in block_lines[1:]:
+        line = raw.rstrip()
+        if PERSON_POSITION_RE.match(line):
+            if not inserted_people:
+                rebuilt.extend(person_lines)
+                inserted_people = True
+            continue
+        if re.match(r"^[ \t]*[-*+][ \t]*群演[ \t]*[：:]", line):
+            if extras_line:
+                rebuilt.append(extras_line)
+            inserted_extras = True
+            continue
+        if line.strip():
+            rebuilt.append(line)
+    if not inserted_people and person_lines:
+        rebuilt.extend(person_lines)
+    if extras_line and not inserted_extras:
+        rebuilt.append(extras_line)
+    replacement = newline.join(rebuilt)
+    if end < len(storyboard):
+        replacement += newline + newline
+    return storyboard[:start] + replacement + storyboard[end:]
 
 
 def start_frame(shot: dict[str, Any]) -> Optional[str]:
@@ -447,7 +689,8 @@ def parse_video_groups(text: str) -> list[dict[str, Any]]:
 
 
 def usable_groups(
-    text: Optional[str], problems: list[str], documents: Optional[dict[str, Optional[str]]] = None
+    text: Optional[str], problems: list[str], documents: Optional[dict[str, Optional[str]]] = None,
+    *, findings: Optional[list[str]] = None,
 ) -> list[dict[str, Any]]:
     """The groups the copy queue may fold their members into.
 
@@ -459,9 +702,10 @@ def usable_groups(
     if not text:
         return []
     documents = {**(documents or {}), VIDEO_PROMPTS: text}
-    findings = check.validate_documents(
-        {name: documents.get(name) for name in check.REQUIRED_DOCUMENTS}, None, partial=True
-    )
+    if findings is None:
+        findings = check.validate_documents(
+            {name: documents.get(name) for name in check.REQUIRED_DOCUMENTS}, None, partial=True
+        )
     motions = check._sections(text, "MOTION")
     shot_of = {
         motion_id: check._plain(check._fields(body, owner=motion_id, errors=[]).get("分镜", ""))
@@ -864,16 +1108,43 @@ def metrics(script: Optional[dict[str, Any]], board: Optional[dict[str, Any]]) -
     return result
 
 
-def read_episode(episode_id: str, documents: dict[str, Optional[str]], review: Optional[str]) -> dict[str, Any]:
+def read_episode(
+    episode_id: str, documents: dict[str, Optional[str]], review: Optional[str],
+    *, pacing_rate: Optional[float] = None,
+    prompt_language: Optional[str] = None,
+    file_exists: Optional[Callable[[str], bool]] = None,
+) -> dict[str, Any]:
     """Parse whatever of the episode exists. Missing documents are ``None``."""
 
+    documents = {
+        name: text.replace("\r\n", "\n").replace("\r", "\n") if text is not None else None
+        for name, text in documents.items()
+    }
+    review = review.replace("\r\n", "\n").replace("\r", "\n") if review is not None else None
+    diagnostics: list[str] = []
+    findings = check.validate_documents(
+        documents, None, partial=True, diagnostics=diagnostics, pacing_rate=pacing_rate,
+        prompt_language=prompt_language, file_exists=file_exists,
+    )
     problems: list[str] = []
     script = _attempt(problems, SCREENPLAY, parse_screenplay, documents.get(SCREENPLAY))
     settings = _attempt(problems, SETTINGS, parse_settings, documents.get(SETTINGS))
-    board = _attempt(problems, STORYBOARD, parse_storyboard, documents.get(STORYBOARD))
+    space_views = (
+            parse_space_views(documents[SETTINGS] or "")
+        if documents.get(SETTINGS) is not None
+        else []
+    )
+    board = _attempt(
+        problems,
+        STORYBOARD,
+        lambda text: parse_storyboard(text, space_views),
+        documents.get(STORYBOARD),
+    )
     images = _attempt(problems, IMAGE_PROMPTS, parse_image_prompts, documents.get(IMAGE_PROMPTS))
     videos = _attempt(problems, VIDEO_PROMPTS, parse_video_prompts, documents.get(VIDEO_PROMPTS))
-    groups = usable_groups(documents.get(VIDEO_PROMPTS), problems, documents) if videos else []
+    groups = usable_groups(
+        documents.get(VIDEO_PROMPTS), problems, documents, findings=findings
+    ) if videos else []
     if settings:
         # `入画` is resolved the way the checker resolves it: every shot whose
         # 视觉依据 lists the entry. Without a storyboard there are none yet.
@@ -901,6 +1172,7 @@ def read_episode(episode_id: str, documents: dict[str, Optional[str]], review: O
         "review": parsed_review,
         "metrics": metrics(script, board),
         "problems": problems,
+        "checks": {"errors": findings, "diagnostics": diagnostics},
     }
 
 

@@ -5,11 +5,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import sys
+import unicodedata
 from pathlib import Path, PurePosixPath
 from collections.abc import Iterable, Mapping
-from typing import NamedTuple, Optional
+from typing import Callable, NamedTuple, Optional
 
 
 MINIMUM_PYTHON = (3, 9)
@@ -201,6 +203,51 @@ LOCK_RE = re.compile(
     r"(?:；图片提示词项：([^；）\n]+))?）"
     r"· 锁面：(.+)$"
 )
+# Optional structured staging. Projects that still use the earlier prose-only
+# 场景站位 block remain valid; these rules activate when a 空间视图 heading or
+# a 人物位置 line opts into the machine-readable form.
+SPACE_VIEW_HEADING_RE = re.compile(
+    r"^###[ \t　]+空间视图[ \t　]*·[ \t　]*(VIEW-[A-Z0-9-]+)"
+    r"(?:[ \t　]*·[ \t　]*([^\n]*))?$",
+    re.MULTILINE,
+)
+SPACE_VIEW_HEADING_LOOSE_RE = re.compile(
+    r"^###[ \t　]*空间视图.*$", re.MULTILINE
+)
+SPACE_ITEM_LINE_RE = re.compile(
+    r"^[ \t　]*[-*+][ \t　]*平面物件[ \t　]*[：:](.*)$",
+    re.MULTILINE,
+)
+SPACE_ITEM_RE = re.compile(
+    r"(ITEM-[A-Z0-9-]+)[ \t　]*《([^》\n]+)》"
+    r"[ \t　]*（(.*)）[ \t　]*$"
+)
+SCENE_STAGING_HEADING_RE = re.compile(
+    r"^##[ \t　]+场景站位[ \t　]*·[ \t　]*("
+    + SCENE_ID_PATTERN
+    + r")[ \t　]*·[ \t　]*([^\n]+)$",
+    re.MULTILINE,
+)
+SCENE_STAGING_HEADING_LOOSE_RE = re.compile(
+    r"^##[ \t　]*场景站位.*$", re.MULTILINE
+)
+PERSON_POSITION_LINE_RE = re.compile(
+    r"^[ \t　]*[-*+][ \t　]*人物位置[ \t　]*[：:](.*)$",
+    re.MULTILINE,
+)
+POSITION_SIDES = ("north", "east", "south", "west", "on")
+POSITION_POSTURES = ("sit", "stand")
+POSITION_FACINGS = (
+    "north",
+    "northeast",
+    "east",
+    "southeast",
+    "south",
+    "southwest",
+    "west",
+    "northwest",
+)
+POSITION_MIN_APART = 0.12
 # The surface has to name what is in the picture. A match glued to a negation
 # ("no pale blue sweater") describes what must be absent, so it cannot be the
 # evidence that the fact is present.
@@ -390,6 +437,7 @@ def _references(
     project_root: Optional[Path],
     errors: list[str],
     entries: Optional[EntryIndex] = None,
+    *, file_exists: Optional[Callable[[str], bool]] = None,
 ) -> frozenset:
     """Validate one 输入参考图/参考 declaration; return the slot kinds it uses."""
     if _is_none(value):
@@ -471,7 +519,7 @@ def _references(
         slot, raw_locator, label = group[0], group[2], group[3]
         may_control, must_not_control = group[5], group[6]
         if kind == "REF":
-            _check_project_file(raw_locator, owner, project_root, errors)
+            _check_project_file(raw_locator, owner, project_root, errors, file_exists=file_exists)
         else:
             _plan_locator(
                 raw_locator, label, owner, slot, purposes[index], entries, errors
@@ -488,7 +536,8 @@ def _references(
 
 
 def _check_project_file(
-    locator: str, owner: str, project_root: Optional[Path], errors: list[str]
+    locator: str, owner: str, project_root: Optional[Path], errors: list[str],
+    *, file_exists: Optional[Callable[[str], bool]] = None,
 ) -> None:
     """A REF locator names a readable file inside the project, or it is a defect.
 
@@ -497,6 +546,10 @@ def _check_project_file(
     """
     if not _portable_path(locator):
         errors.append(f"{owner}: REF 路径不是安全的项目相对路径: {locator}")
+        return
+    if file_exists is not None:
+        if not file_exists(locator):
+            errors.append(f"{owner}: REF 文件不存在或不可安全读取: {locator}")
         return
     if project_root is None:
         return
@@ -518,6 +571,101 @@ class SpokenLine(NamedTuple):
     scene: Optional[str]
     speaker: str
     key: str
+
+
+class ScreenplayBeat(NamedTuple):
+    """One production-relevant screenplay paragraph and its source line."""
+
+    scene: str
+    line: int
+    kind: str
+    text: str
+
+
+def _screenplay_beats(screenplay: str) -> list[ScreenplayBeat]:
+    """Read the screenplay blocks that a storyboard must visibly or audibly carry.
+
+    Comments and continuity notes are not shots. Dialogue, visible production
+    tags and action paragraphs are. This is intentionally a small local reader:
+    the skill stays installable without the write sibling.
+    """
+
+    beats: list[ScreenplayBeat] = []
+    scene: Optional[str] = None
+    lines = screenplay.splitlines()
+    index = 0
+    while index < len(lines):
+        stripped = lines[index].strip()
+        if not stripped:
+            index += 1
+            continue
+        if stripped.startswith("<!--"):
+            end = index
+            while end < len(lines) and "-->" not in lines[end]:
+                end += 1
+            index = len(lines) if end >= len(lines) else end + 1
+            continue
+        if stripped.startswith("#"):
+            heading = SCENE_HEADING_RE.match(stripped)
+            scene = heading.group(1) if heading else None
+            index += 1
+            continue
+        end = index
+        while end + 1 < len(lines):
+            following = lines[end + 1].strip()
+            if not following or following.startswith(("#", "<!--")):
+                break
+            end += 1
+        paragraph_lines = [line.strip() for line in lines[index : end + 1]]
+        start_line = index + 1
+        index = end + 1
+        if scene is None or any(
+            SCREENPLAY_DIALOGUE_RE.fullmatch(line)
+            or SCREENPLAY_BLOCK_START_RE.match(line)
+            for line in paragraph_lines[1:]
+        ):
+            continue
+        text = "\n".join(paragraph_lines).strip()
+        voice = SCREENPLAY_VOICE_TAG_RE.fullmatch(text)
+        dialogue = voice or SCREENPLAY_DIALOGUE_RE.fullmatch(text)
+        if dialogue is not None:
+            beats.append(
+                ScreenplayBeat(
+                    scene=scene,
+                    line=start_line,
+                    kind="dialogue",
+                    text=dialogue.group("text"),
+                )
+            )
+            continue
+        tag = re.fullmatch(
+            r"\[(?P<tag>SFX|画面文字|连续性|转场)\]\s*(?P<body>\S[\s\S]*)",
+            text,
+        )
+        if tag is not None:
+            if tag.group("tag") != "连续性":
+                beats.append(
+                    ScreenplayBeat(
+                        scene=scene,
+                        line=start_line,
+                        kind="tag",
+                        text=tag.group("body"),
+                    )
+                )
+            continue
+        if text.startswith("["):
+            # Unsupported tags are a source-format issue; they are not silently
+            # promoted to action coverage here.
+            continue
+        beats.append(
+            ScreenplayBeat(
+                scene=scene,
+                line=start_line,
+                kind="action",
+                text=text,
+            )
+        )
+    return beats
 
 
 def _screenplay_dialogue(screenplay: str) -> list[SpokenLine]:
@@ -660,6 +808,7 @@ def _audio_references(
     prompt: Optional[str],
     voices: VoiceContext,
     scenes: Optional[list[str]],
+    file_exists: Optional[Callable[[str], bool]] = None,
 ) -> None:
     """Validate one MOTION's 参考音频 line against the character it names."""
     if _is_none(value):
@@ -692,7 +841,7 @@ def _audio_references(
     for match in matches:
         slot, _, locator, label, purpose, _, may, must = match.groups()
         name = match.group(6).strip()
-        _check_project_file(locator, owner, project_root, errors)
+        _check_project_file(locator, owner, project_root, errors, file_exists=file_exists)
         if purpose.strip() != AUDIO_PURPOSE:
             errors.append(
                 f"{owner}: 参考音频用途只能是{AUDIO_PURPOSE}: {slot}（{purpose.strip()}）"
@@ -1247,6 +1396,11 @@ def _prompt_language(project_root: Optional[Path]) -> str:
         project = json.loads(configuration.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return "en"
+    return prompt_language_from_manifest(project)
+
+
+def prompt_language_from_manifest(project: object) -> str:
+    """Resolve the same language from a safely read Dashboard snapshot."""
     if not isinstance(project, dict):
         return "en"
     authority = project.get("creator_authority")
@@ -1265,7 +1419,8 @@ def _prompt_language(project_root: Optional[Path]) -> str:
 
 
 def _check_language_designators(
-    project_root: Optional[Path], *, entries: list[VisualEntry], errors: list[str]
+    project_root: Optional[Path], *, entries: list[VisualEntry], errors: list[str],
+    prompt_language: Optional[str] = None,
 ) -> None:
     """Every character must be nameable in the prompt body's language.
 
@@ -1278,7 +1433,8 @@ def _check_language_designators(
     rounds: a document missing 视觉依据 got one error, and only after fixing it
     did the missing 画面代称 appear.
     """
-    if project_root is None or _prompt_language(project_root).casefold().startswith("zh"):
+    language = prompt_language if prompt_language is not None else _prompt_language(project_root)
+    if not language or language.casefold().startswith("zh"):
         # Without a project root the prompt language is unknown; validate_documents
         # promises to skip what needs the disk rather than guess a language.
         return
@@ -1500,6 +1656,269 @@ def _shot_sources(
     return resolved
 
 
+def _match_key(value: str) -> str:
+    """Case-folded text without whitespace or punctuation for coverage matching."""
+
+    return "".join(
+        character.casefold()
+        for character in value
+        if not character.isspace()
+        and not unicodedata.category(character).startswith("P")
+    )
+
+
+def _voiced_character_count(value: str) -> int:
+    spoken = re.sub(r"（[^）]*）|\([^)]*\)", "", value)
+    return sum(
+        1
+        for character in spoken
+        if not character.isspace()
+        and not unicodedata.category(character).startswith("P")
+    )
+
+
+class ShotEvidence(NamedTuple):
+    scenes: frozenset[str]
+    quotes: frozenset[str]
+    surfaces: frozenset[str]
+
+
+def _shot_evidence(shot_body: str) -> ShotEvidence:
+    fields = _fields(shot_body, owner="SHOT", errors=[])
+    quotes = {
+        key
+        for quote in QUOTE_RE.findall(fields.get("来源", ""))
+        if (key := _match_key(quote))
+    }
+    surfaces = frozenset(
+        key
+        for name in ("起点", "唯一动作", "终点", "声音", "动作边界")
+        if (key := _match_key(fields.get(name, "")))
+    )
+    scenes = frozenset(_shot_sources(fields.get("来源", ""), "SHOT", None, []))
+    return ShotEvidence(scenes, frozenset(quotes), surfaces)
+
+
+def _matched_shots(
+    beat: ScreenplayBeat,
+    shot_evidence: Mapping[str, ShotEvidence],
+) -> list[str]:
+    """Match explicit whole-block declarations within their declared source scene.
+
+    Partial quotes and paraphrases locate a passage for a human; they cannot
+    mechanically prove that the paragraph's action or outcome was carried.
+    """
+    text = _match_key(beat.text)
+    return [
+        shot_id
+        for shot_id, evidence in shot_evidence.items()
+        if text
+        and beat.scene in evidence.scenes
+        and (text in evidence.quotes or text in evidence.surfaces)
+    ]
+
+
+def pacing_rate_from_manifest(project: object) -> Optional[float]:
+    """Read an accepted project value from an already safely loaded manifest."""
+    if not isinstance(project, Mapping):
+        return None
+    format_ = project.get("format")
+    pacing = format_.get("pacing") if isinstance(format_, Mapping) else None
+    rate = pacing.get("spoken_characters_per_second") if isinstance(pacing, Mapping) else None
+    return _positive_rate(rate)
+
+
+def _positive_rate(rate: object) -> Optional[float]:
+    if isinstance(rate, (int, float)) and not isinstance(rate, bool):
+        try:
+            value = float(rate)
+        except OverflowError:
+            return None
+        if math.isfinite(value) and value > 0:
+            return value
+    return None
+
+
+def _project_pacing(project_root: Optional[Path]) -> Optional[float]:
+    if project_root is None:
+        return None
+    try:
+        project = json.loads(
+            (project_root / "short-drama.json").read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    return pacing_rate_from_manifest(project)
+
+
+def _dialogue_capacity(
+    claims: list[tuple[ScreenplayBeat, list[str], float]],
+    shot_seconds: Mapping[str, Optional[float]],
+    errors: list[str],
+    diagnostics: list[str],
+) -> None:
+    """Check whether declared shots can possibly hold the claimed spoken time.
+
+    A small residual network checks capacity without inventing per-shot timing.
+    A feasible budget is only an upper bound, never an editorial timing verdict.
+    """
+    known: list[tuple[ScreenplayBeat, list[str], float]] = []
+    for beat, matches, needed in claims:
+        if any(shot_seconds[shot_id] is None for shot_id in matches):
+            diagnostics.append(f"对白估时：剧本第 {beat.line} 行的承载镜长尚未确定，未作容量判定")
+            continue
+        available = sum(float(shot_seconds[shot_id] or 0) for shot_id in matches)
+        if available + 0.05 < needed:
+            errors.append(
+                f"剧本.md: 第 {beat.line} 行对白约需 {needed:.1f} 秒，"
+                f"但承载它的 {'、'.join(matches)} 合计 {available:g} 秒；"
+                "按项目已接受语速不能说完"
+            )
+        known.append((beat, matches, needed))
+    if not known:
+        return
+    shots = list(dict.fromkeys(shot_id for _, matches, _ in known for shot_id in matches))
+    shot_nodes = {shot_id: index + len(known) + 2 for index, shot_id in enumerate(shots)}
+    graph: dict[int, dict[int, float]] = {}
+
+    def edge(start: int, end: int, capacity: float) -> None:
+        graph.setdefault(start, {})[end] = capacity
+        graph.setdefault(end, {})[start] = 0.0
+
+    for index, (_, matches, needed) in enumerate(known, 2):
+        edge(0, index, needed)
+        for shot_id in matches:
+            edge(index, shot_nodes[shot_id], needed)
+    for shot_id, node in shot_nodes.items():
+        edge(node, 1, float(shot_seconds[shot_id] or 0))
+    flow = 0.0
+    while True:
+        parents = {0: -1}
+        queue = [0]
+        for node in queue:
+            if 1 in parents:
+                break
+            for target, capacity in graph[node].items():
+                if capacity > 1e-9 and target not in parents:
+                    parents[target] = node
+                    queue.append(target)
+        if 1 not in parents:
+            break
+        amount = math.inf
+        node = 1
+        while node != 0:
+            amount = min(amount, graph[parents[node]][node])
+            node = parents[node]
+        node = 1
+        while node != 0:
+            parent = parents[node]
+            graph[parent][node] -= amount
+            graph[node][parent] += amount
+            node = parent
+        flow += amount
+    needed = sum(demand for _, _, demand in known)
+    if needed - flow > 0.05 and not any(
+        sum(float(shot_seconds[shot_id] or 0) for shot_id in matches) + 0.05 < demand
+        for _, matches, demand in known
+    ):
+        lines = "、".join(str(beat.line) for beat, _, _ in known)
+        errors.append(
+            f"{'、'.join(shots)}: 承载的剧本第 {lines} 行对白合计约需 {needed:.1f} 秒，"
+            f"已声明承载关系最多容纳 {flow:g} 秒；共享镜长不能重复分配"
+        )
+
+
+def _check_beat_coverage(
+    screenplay: str,
+    shots: Mapping[str, str],
+    unfilmed: Mapping[str, str],
+    requested_rate: Optional[float],
+    errors: list[str],
+    diagnostics: list[str],
+) -> None:
+    """Check explicit paragraph claims, without treating resemblance as proof."""
+    shot_evidence = {shot_id: _shot_evidence(body) for shot_id, body in shots.items()}
+    shot_seconds = {
+        shot_id: _declared_seconds(
+            _plain(_fields(body, owner=shot_id, errors=[]).get("时长", ""))
+        )
+        for shot_id, body in shots.items()
+    }
+    claims: list[tuple[ScreenplayBeat, list[str], float]] = []
+    beats = [beat for beat in _screenplay_beats(screenplay) if beat.scene not in unfilmed]
+    carried = 0
+    for beat in beats:
+        matches = _matched_shots(beat, shot_evidence)
+        if not matches:
+            kind = {"action": "动作段", "dialogue": "对白段", "tag": "声音/画面文字段"}[beat.kind]
+            errors.append(
+                f"剧本.md: 第 {beat.line} 行 {beat.scene} 的{kind}没有被任何镜头承载；"
+                f"「{_excerpt(beat.text, 24)}」需要同场镜头的完整来源引文或逐字承载声明"
+            )
+            text = _match_key(beat.text)
+            partial = [
+                shot_id
+                for shot_id, evidence in shot_evidence.items()
+                if beat.scene in evidence.scenes
+                and any(quote in text for quote in evidence.quotes)
+            ]
+            if partial:
+                diagnostics.append(
+                    f"来源核对：剧本第 {beat.line} 行在 {'、'.join(partial)} 仅有部分引文，"
+                    "请核对并补完整原文；未据此判定承载"
+                )
+            continue
+        carried += 1
+        if beat.kind == "dialogue" and requested_rate is not None:
+            claims.append((beat, matches, _voiced_character_count(beat.text) / requested_rate))
+    if requested_rate is not None:
+        _dialogue_capacity(claims, shot_seconds, errors, diagnostics)
+    diagnostics.append(
+        f"节拍覆盖：{carried}/{len(beats)} 个原文块有同场完整承载声明；文本声明不代替语义审查"
+    )
+
+
+def _check_asset_diagnostics(
+    screenplay: str,
+    visual: str,
+    shots: Mapping[str, str],
+    diagnostics: list[str],
+) -> None:
+    """Report asset facts the current Markdown can prove, never a genre default."""
+
+    if not visual or not shots:
+        return
+    references: set[tuple[str, str]] = set()
+    for body in shots.values():
+        basis = _fields(body, owner="SHOT", errors=[]).get("视觉依据", "")
+        references.update(
+            (match[0], match[1])
+            for match in VISUAL_BASIS_ENTRY_RE.findall(basis)
+            if len(match) >= 2
+        )
+    referenced_names = {reference[1] for reference in references}
+    script = _match_key(screenplay)
+    headings = list(VISUAL_SETTING_HEADING_RE.finditer(visual))
+    for index, heading in enumerate(headings):
+        category, name = heading.group(1), heading.group(2).strip()
+        end = (
+            headings[index + 1].start()
+            if index + 1 < len(headings)
+            else None
+        )
+        body = visual[heading.end() : end]
+        if not re.search(r"^[ \t　]*[-*+][ \t　]*识别锚点[：:]", body, re.MULTILINE):
+            diagnostics.append(
+                f"资产诊断：{category}「{name}」没有识别锚点；"
+                "若要跨镜保持可见特征，请补可观察事实"
+            )
+        if name not in referenced_names and _match_key(name) in script:
+            diagnostics.append(
+                f"资产诊断：{category}「{name}」在剧本中出现，"
+                "但当前没有任何镜头把它写进视觉依据；请核对是否漏绑或仅为画外提及"
+            )
+
+
 def _unfilmed_scenes(
     storyboard: str, scenes: "frozenset", errors: list[str]
 ) -> dict:
@@ -1580,8 +1999,334 @@ def missing_documents(episode: Path) -> list[str]:
     return [name for name in REQUIRED_DOCUMENTS if not (episode / name).is_file()]
 
 
+class SpatialItem(NamedTuple):
+    item_id: str
+    name: str
+    seatable: bool
+
+
+class SpatialPosition(NamedTuple):
+    name: str
+    present: bool
+    item: Optional[str]
+    side: Optional[str]
+    along: Optional[float]
+    posture: Optional[str]
+    facing: Optional[str]
+
+
+def _line_number(text: str, offset: int) -> int:
+    return text.count("\n", 0, offset) + 1
+
+
+def _next_subsection(text: str, start: int) -> int:
+    match = re.search(r"^#{2,3}[ \t　]+", text[start:], re.MULTILINE)
+    return start + match.start() if match else len(text)
+
+
+def _spatial_coordinates(value: str) -> Optional[tuple[float, ...]]:
+    pieces = [piece.strip() for piece in re.split(r"[,，]", value)]
+    try:
+        numbers = tuple(float(piece) for piece in pieces)
+    except ValueError:
+        return None
+    if not numbers or any(not math.isfinite(number) or number < 0 or number > 1 for number in numbers):
+        return None
+    return numbers
+
+
+def _position_fields(value: str) -> Optional[dict[str, str]]:
+    pieces = [piece.strip() for piece in value.split("｜")]
+    if not pieces or not pieces[0]:
+        return None
+    fields: dict[str, str] = {}
+    for piece in pieces[1:]:
+        key, separator, raw = piece.partition("：")
+        if not separator:
+            return None
+        key = key.strip()
+        if key not in {"物", "侧", "沿线", "姿态", "朝向", "在场"} or key in fields:
+            return None
+        fields[key] = raw.strip()
+    fields["__name__"] = pieces[0]
+    return fields
+
+
+def _spatial_views(
+    visual: str, errors: list[str]
+) -> dict[str, tuple[str, dict[str, SpatialItem]]]:
+    exact_starts = {match.start() for match in SPACE_VIEW_HEADING_RE.finditer(visual)}
+    for loose in SPACE_VIEW_HEADING_LOOSE_RE.finditer(visual):
+        if loose.start() not in exact_starts:
+            errors.append(
+                f"视觉设定.md: 第 {_line_number(visual, loose.start())} 行: "
+                "空间视图标题必须写成 `### 空间视图 · VIEW-* · 名称`"
+            )
+    views: dict[str, tuple[str, dict[str, SpatialItem]]] = {}
+    for heading in SPACE_VIEW_HEADING_RE.finditer(visual):
+        view_id = heading.group(1)
+        line = _line_number(visual, heading.start())
+        if view_id in views:
+            errors.append(f"视觉设定.md: 第 {line} 行: 空间视图 ID 重复: {view_id}")
+            continue
+        locations = list(
+            re.finditer(r"^##[ \t　]+地点[ \t　]*·[ \t　]*([^\n]+)$", visual[: heading.start()], re.MULTILINE)
+        )
+        if not locations:
+            errors.append(
+                f"视觉设定.md: 第 {line} 行: {view_id} 必须写在「## 地点 · 名称」条目内"
+            )
+            continue
+        body_end = _next_subsection(visual, heading.end())
+        body = visual[heading.end() : body_end]
+        fields = {
+            match.group(1).strip(): match.group(2).strip()
+            for match in re.finditer(
+                r"^[ \t　]*[-*+][ \t　]*([^：:\n]+)[ \t　]*[：:](.*)$",
+                body,
+                re.MULTILINE,
+            )
+        }
+        read_from = fields.get("认图来源", "")
+        if read_from not in ("picture", "prompt"):
+            errors.append(
+                f"视觉设定.md: 第 {line} 行: {view_id} 的认图来源只能是 picture 或 prompt"
+            )
+        items: dict[str, SpatialItem] = {}
+        names: set[str] = set()
+        for item_line in SPACE_ITEM_LINE_RE.finditer(body):
+            item_number = _line_number(visual, heading.end() + item_line.start())
+            match = SPACE_ITEM_RE.fullmatch(item_line.group(1))
+            if match is None:
+                errors.append(
+                    f"视觉设定.md: 第 {item_number} 行: 平面物件必须写成 "
+                    "`ITEM-*《名称》（图框：…；平面：…；可坐：是|否）`"
+                )
+                continue
+            item_id, name, raw_attributes = match.groups()
+            attributes: dict[str, str] = {}
+            for part in raw_attributes.split("；"):
+                key, separator, raw = part.partition("：")
+                if separator:
+                    attributes[key.strip()] = raw.strip()
+            if any(key not in attributes for key in ("图框", "平面", "可坐")):
+                errors.append(
+                    f"视觉设定.md: 第 {item_number} 行: {item_id} 缺少图框、平面或可坐"
+                )
+                continue
+            box = (
+                None
+                if attributes["图框"] == "无"
+                else _spatial_coordinates(attributes["图框"])
+            )
+            plan = _spatial_coordinates(attributes["平面"])
+            if (box is not None and len(box) != 4) or plan is None or len(plan) != 4:
+                errors.append(
+                    f"视觉设定.md: 第 {item_number} 行: {item_id} 的坐标必须写成四个 0–1 数值"
+                )
+                continue
+            if read_from == "picture" and box is None:
+                errors.append(
+                    f"视觉设定.md: 第 {item_number} 行: {item_id} 按真实图片认图时必须写图框坐标"
+                )
+                continue
+            seatable = {"是": True, "否": False}.get(attributes["可坐"])
+            if seatable is None:
+                errors.append(
+                    f"视觉设定.md: 第 {item_number} 行: {item_id} 的可坐只能写「是」或「否」"
+                )
+                continue
+            if item_id in items:
+                errors.append(
+                    f"视觉设定.md: 第 {item_number} 行: {view_id} 的物件 ID 重复: {item_id}"
+                )
+                continue
+            if name.strip() in names:
+                errors.append(
+                    f"视觉设定.md: 第 {item_number} 行: {view_id} 的物件名称重复: {name.strip()}"
+                )
+                continue
+            names.add(name.strip())
+            items[item_id] = SpatialItem(item_id, name.strip(), seatable)
+        if not items:
+            errors.append(
+                f"视觉设定.md: 第 {line} 行: {view_id} 至少需要一个平面物件"
+            )
+        views[view_id] = (locations[-1].group(1).strip(), items)
+    return views
+
+
+def validate_scene_staging(
+    visual: str,
+    storyboard: str,
+    *,
+    resolve_views: bool = True,
+) -> list[str]:
+    """Check the optional structured staging data without invalidating prose-only projects."""
+    errors: list[str] = []
+    views = _spatial_views(visual, errors)
+    exact_starts = {
+        match.start() for match in SCENE_STAGING_HEADING_RE.finditer(storyboard)
+    }
+    for loose in SCENE_STAGING_HEADING_LOOSE_RE.finditer(storyboard):
+        if loose.start() not in exact_starts:
+            errors.append(
+                f"分镜.md: 第 {_line_number(storyboard, loose.start())} 行: "
+                "场景站位标题必须写成 `## 场景站位 · <场次 ID> · <地点>`"
+            )
+    seen_scenes: set[str] = set()
+    for heading in SCENE_STAGING_HEADING_RE.finditer(storyboard):
+        scene_id = heading.group(1)
+        heading_line = _line_number(storyboard, heading.start())
+        if scene_id in seen_scenes:
+            errors.append(f"分镜.md: 第 {heading_line} 行: 场景站位 ID 重复: {scene_id}")
+            continue
+        seen_scenes.add(scene_id)
+        body_end = _next_subsection(storyboard, heading.end())
+        body = storyboard[heading.end() : body_end]
+        view_match = re.search(
+            r"^[ \t　]*[-*+][ \t　]*空间视图[ \t　]*[：:](.*)$",
+            body,
+            re.MULTILINE,
+        )
+        view_id = view_match.group(1).strip() if view_match else ""
+        person_lines = list(PERSON_POSITION_LINE_RE.finditer(body))
+        if not person_lines:
+            continue
+        if not view_id:
+            errors.append(
+                f"分镜.md: 第 {heading_line} 行: {scene_id} 有人物位置时必须写空间视图"
+            )
+        if resolve_views and view_id and view_id not in views:
+            errors.append(
+                f"分镜.md: {scene_id}: 空间视图不存在于《视觉设定.md》: {view_id}"
+            )
+            continue
+        items = views.get(view_id, ("", {}))[1]
+        positions: list[SpatialPosition] = []
+        for person_line in person_lines:
+            line = _line_number(storyboard, heading.end() + person_line.start())
+            fields = _position_fields(person_line.group(1))
+            if fields is None:
+                errors.append(
+                    f"分镜.md: 第 {line} 行: 人物位置语法无效；"
+                    "写成 `- 人物位置：姓名｜物：ITEM-*｜侧：north｜沿线：0.50｜姿态：stand｜朝向：east`"
+                )
+                continue
+            name = fields["__name__"]
+            present_text = fields.get("在场", "是")
+            if present_text not in ("是", "否"):
+                errors.append(
+                    f"分镜.md: 第 {line} 行: {name} 的在场只能写「是」或「否」"
+                )
+                continue
+            if present_text == "否":
+                if set(fields) - {"__name__", "在场"}:
+                    errors.append(
+                        f"分镜.md: 第 {line} 行: {name} 开场不在时不能写物件、侧、沿线、姿态或朝向"
+                    )
+                    continue
+                positions.append(
+                    SpatialPosition(name, False, None, None, None, None, None)
+                )
+                continue
+            missing = [
+                key for key in ("物", "侧", "沿线", "姿态", "朝向") if key not in fields
+            ]
+            if missing:
+                errors.append(
+                    f"分镜.md: 第 {line} 行: {name} 缺少 " + "、".join(missing)
+                )
+                continue
+            item = fields["物"]
+            side = fields["侧"]
+            posture = fields["姿态"]
+            facing = fields["朝向"]
+            try:
+                along = float(fields["沿线"])
+            except ValueError:
+                along = -1
+            malformed = (
+                re.fullmatch(r"ITEM-[A-Z0-9-]+", item) is None
+                or side not in POSITION_SIDES
+                or posture not in POSITION_POSTURES
+                or facing not in POSITION_FACINGS
+                or not math.isfinite(along)
+                or along < 0
+                or along > 1
+            )
+            if malformed:
+                errors.append(
+                    f"分镜.md: 第 {line} 行: {name} 的人物位置字段无效"
+                )
+                continue
+            if item not in items:
+                if resolve_views and view_id:
+                    errors.append(
+                        f"分镜.md: {scene_id}: {name} 的物件 {item} 不在 {view_id} 中"
+                    )
+                continue
+            if side == "on" and not items[item].seatable:
+                errors.append(
+                    f"分镜.md: {scene_id}: {name} 在 {items[item].name} 上，"
+                    "但该物件标记为不可坐"
+                )
+            if side == "on" and along != 0.5:
+                errors.append(
+                    f"分镜.md: {scene_id}: {name} 在物件上时沿线应写 0.5"
+                )
+            positions.append(
+                SpatialPosition(name, True, item, side, along, posture, facing)
+            )
+        names = [position.name for position in positions]
+        if len(names) != len(set(names)):
+            errors.append(f"分镜.md: {scene_id}: 人物位置重复")
+        if positions and not any(position.present for position in positions):
+            errors.append(f"分镜.md: {scene_id}: 开场一个人都不在")
+        extras_match = re.search(
+            r"^[ \t　]*[-*+][ \t　]*群演[ \t　]*[：:][ \t　]*([0-9]+)"
+            r"(?:[ \t　]*｜[ \t　]*(.*))?$",
+            body,
+            re.MULTILINE,
+        )
+        if extras_match is not None:
+            extras = int(extras_match.group(1))
+            extras_where = (extras_match.group(2) or "").strip()
+            extras_line = _line_number(
+                storyboard, heading.end() + extras_match.start()
+            )
+            if extras > 0 and not extras_where:
+                errors.append(
+                    f"分镜.md: 第 {extras_line} 行: 有群演时必须写群演位置"
+                )
+            if extras == 0 and extras_where:
+                errors.append(
+                    f"分镜.md: 第 {extras_line} 行: 没有群演时群演位置留空"
+                )
+        side_groups: dict[tuple[str, str], list[SpatialPosition]] = {}
+        for position in positions:
+            if not position.present or position.side in (None, "on"):
+                continue
+            side_groups.setdefault(
+                (position.item or "", position.side or ""), []
+            ).append(position)
+        for (item_id, side), group in side_groups.items():
+            ordered = sorted(group, key=lambda position: position.along or 0)
+            for before, after in zip(ordered, ordered[1:]):
+                if (after.along or 0) - (before.along or 0) < POSITION_MIN_APART:
+                    errors.append(
+                        f"分镜.md: {scene_id}: {before.name} 和 {after.name} "
+                        f"叠在 {item_id} 的 {side} 侧，沿线至少拉开 {POSITION_MIN_APART:g}"
+                    )
+    return errors
+
+
 def validate_episode(
-    episode: Path, project_root: Optional[Path] = None, *, partial: bool = False
+    episode: Path,
+    project_root: Optional[Path] = None,
+    *,
+    partial: bool = False,
+    diagnostics: Optional[list[str]] = None,
 ) -> list[str]:
     """Return all deterministic contract errors for ``episode``.
 
@@ -1596,8 +2341,27 @@ def validate_episode(
         if (episode / name).is_file()
     }
     return validate_documents(
-        texts, (project_root or episode.parent.parent).resolve(), partial=partial
+        texts,
+        (project_root or episode.parent.parent).resolve(),
+        partial=partial,
+        diagnostics=diagnostics,
     )
+
+
+def diagnose_episode(
+    episode: Path, project_root: Optional[Path] = None, *, partial: bool = False
+) -> dict[str, object]:
+    """Return blocking errors plus non-blocking, evidence-backed asset notes."""
+
+    episode = episode.resolve()
+    diagnostics: list[str] = []
+    errors = validate_episode(
+        episode,
+        project_root,
+        partial=partial,
+        diagnostics=diagnostics,
+    )
+    return {"errors": errors, "diagnostics": diagnostics}
 
 
 def validate_documents(
@@ -1605,14 +2369,19 @@ def validate_documents(
     project_root: Optional[Path],
     *,
     partial: bool = False,
+    diagnostics: Optional[list[str]] = None,
+    pacing_rate: Optional[float] = None,
+    prompt_language: Optional[str] = None,
+    file_exists: Optional[Callable[[str], bool]] = None,
 ) -> list[str]:
     """The same rules over document text already in hand, keyed by file name.
 
-    A missing or None entry is a missing document. ``project_root`` None skips
-    only what needs the disk: whether a REF file exists, and the project's
-    prompt language.
+    A missing or None entry is a missing document. With no ``project_root``,
+    callers can provide safely read pacing/language and a pinned file-existence
+    callback; disk-dependent rules without that evidence remain unknown.
     """
     errors: list[str] = []
+    notes = diagnostics if diagnostics is not None else []
     missing = [name for name in REQUIRED_DOCUMENTS if texts.get(name) is None]
     if missing and not partial:
         return [f"缺少创作文档: {', '.join(missing)}"]
@@ -1635,6 +2404,14 @@ def validate_documents(
     video = read("视频提示词.md")
     visual = read("视觉设定.md")
     screenplay = read("剧本.md")
+    if has_visual or has_storyboard:
+        errors.extend(
+            validate_scene_staging(
+                visual if has_visual else "",
+                storyboard if has_storyboard else "",
+                resolve_views=has_visual,
+            )
+        )
     scene_headings = SCENE_HEADING_RE.findall(screenplay)
     scenes = frozenset(scene_headings)
     known_scenes = scenes if has_screenplay else None
@@ -1715,7 +2492,7 @@ def validate_documents(
             pass
         elif "REF-" in reference_value:
             _references(
-                reference_value, match.group(1), project_root, errors, entries
+                reference_value, match.group(1), project_root, errors, entries, file_exists=file_exists
             )
         else:
             errors.append(
@@ -1802,7 +2579,7 @@ def validate_documents(
                 copyable_prompt, motion_id, spoken_sources, errors
             )
         motion_input = motion_fields.get("输入参考图", "")
-        _references(motion_input, motion_id, project_root, errors, entries)
+        _references(motion_input, motion_id, project_root, errors, entries, file_exists=file_exists)
         if "参考音频" in motion_fields:
             _audio_references(
                 motion_fields["参考音频"],
@@ -1818,6 +2595,7 @@ def validate_documents(
                 prompt=copyable_prompt,
                 voices=voices,
                 scenes=scenes,
+                file_exists=file_exists,
             )
 
         if _has_pending_references(governing_input):
@@ -1894,7 +2672,7 @@ def validate_documents(
             errors.append(
                 f"{shot_id}: 参考音频写在《视频提示词.md》的 MOTION 条目里，分镜不登记"
             )
-        _references(shot_input, shot_id, project_root, errors, entries)
+        _references(shot_input, shot_id, project_root, errors, entries, file_exists=file_exists)
 
         basis_value = fields.get("视觉依据", "")
         if not basis_value:
@@ -1975,6 +2753,17 @@ def validate_documents(
                 anchor, motion_id, "静态视觉锚点", basis, visual_entries, errors
             )
 
+    if has_screenplay and has_storyboard and shots:
+        _check_beat_coverage(
+            screenplay,
+            shots,
+            unfilmed,
+            _positive_rate(pacing_rate) if pacing_rate is not None else _project_pacing(project_root),
+            errors,
+            notes,
+        )
+        _check_asset_diagnostics(screenplay, visual, shots, notes)
+
     if not has_storyboard:
         # A partial check without 分镜.md still owes each MOTION the rules that
         # read only the MOTION; its own 输入参考图 governs them.
@@ -2004,7 +2793,7 @@ def validate_documents(
     )
 
     _check_language_designators(
-        project_root, entries=visual_entries, errors=errors
+        project_root, entries=visual_entries, errors=errors, prompt_language=prompt_language
     )
     _check_continuity_locks(
         locks,
@@ -2034,10 +2823,16 @@ def main() -> int:
     reconfigure = getattr(sys.stdout, "reconfigure", None)
     if reconfigure is not None:
         reconfigure(errors="backslashreplace")
-    errors = validate_episode(args.episode, args.project_root, partial=args.partial)
+    report = diagnose_episode(args.episode, args.project_root, partial=args.partial)
+    errors = report["errors"]
+    diagnostics = report["diagnostics"]
+    if not isinstance(errors, list) or not isinstance(diagnostics, list):
+        raise SystemExit("diagnostic report is invalid")
     if errors:
         for error in errors:
             print(f"ERROR: {error}")
+        for note in diagnostics:
+            print(f"NOTE: {note}")
         return 1
     missing = missing_documents(args.episode) if args.partial else []
     if len(missing) == len(REQUIRED_DOCUMENTS):
@@ -2046,6 +2841,8 @@ def main() -> int:
         print(f"OK（局部）: {args.episode}；未核对与这些文档相关的规则: {', '.join(missing)}")
     else:
         print(f"OK: {args.episode}")
+    for note in diagnostics:
+        print(f"NOTE: {note}")
     return 0
 
 

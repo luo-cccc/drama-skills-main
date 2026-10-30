@@ -11,6 +11,7 @@ import hashlib
 import importlib.util
 import ipaddress
 import json
+import math
 import os
 import re
 import secrets
@@ -167,9 +168,30 @@ LEGACY_EPISODE_FILES = frozenset(
     }
 )
 MAX_SEARCH_QUERY = 80
+STAGE_SIDES = frozenset({"north", "east", "south", "west", "on"})
+STAGE_POSTURES = frozenset({"sit", "stand"})
+STAGE_FACINGS = frozenset(
+    {
+        "north",
+        "northeast",
+        "east",
+        "southeast",
+        "south",
+        "southwest",
+        "west",
+        "northwest",
+    }
+)
+STAGE_MIN_APART = 0.12
 # Only what a creator set about the project's shape; everything else in the
 # status is lifecycle bookkeeping the dashboard does not show.
-CREATOR_STATUS_FIELDS = ("title", "format", "rhythm_profile", "lifecycle")
+CREATOR_STATUS_FIELDS = (
+    "title",
+    "format",
+    "rhythm_profile",
+    "lifecycle",
+    "project_mode",
+)
 
 
 def _version(data: bytes) -> str:
@@ -1054,6 +1076,440 @@ class ProjectStore:
         finally:
             folder.close()
 
+    def _media_digest(self, directory: Directory, relative: str) -> str | None:
+        try:
+            pure = self._safe_relative(relative)
+            handle, _, _ = self._open_media(directory, pure)
+        except (DashboardError, OSError):
+            return None
+        digest = hashlib.sha256()
+        try:
+            while chunk := handle.read(1024 * 1024):
+                digest.update(chunk)
+        finally:
+            handle.close()
+        return digest.hexdigest()
+
+    def _reference_manifest(
+        self,
+        directory: Directory,
+        relative: str,
+        texts: Mapping[str, str | None],
+    ) -> dict[str, Any]:
+        text, problem = self._read_document(directory, relative)
+        if problem:
+            return {"groups": [], "problems": [problem]}
+        if text is None:
+            return {"groups": [], "problems": []}
+        try:
+            manifest = json.loads(text)
+        except json.JSONDecodeError:
+            return {"groups": [], "problems": ["参考图版本索引无法读取，图片仍可从文件列表打开。"]}
+        if (
+            not isinstance(manifest, Mapping)
+            or manifest.get("kind") != "reference_manifest"
+            or manifest.get("schema_version") != "1.0"
+            or not isinstance(manifest.get("groups"), Mapping)
+        ):
+            return {"groups": [], "problems": ["参考图版本索引格式无效，图片仍可从文件列表打开。"]}
+
+        records: dict[tuple[str, str], Mapping[str, Any]] = {}
+        raw_records: dict[tuple[str, str], Mapping[str, Any]] = {}
+        jobs: dict[str, list[tuple[str, str]]] = {}
+        for group_id, group in manifest["groups"].items():
+            if not isinstance(group_id, str) or not isinstance(group, Mapping):
+                continue
+            raw_views = group.get("views")
+            if not isinstance(raw_views, Mapping):
+                continue
+            for view_id, view in raw_views.items():
+                if not isinstance(view_id, str) or not isinstance(view, Mapping):
+                    continue
+                current = view.get("current")
+                if not isinstance(current, Mapping):
+                    continue
+                key = (group_id, view_id)
+                records[key] = current
+                raw_records[key] = view
+                job_id = current.get("job_id")
+                if isinstance(job_id, str):
+                    jobs.setdefault(job_id, []).append(key)
+
+        sources = dict(texts)
+        digests: dict[str, str | None] = {}
+        reasons: dict[tuple[str, str], list[str]] = {key: [] for key in records}
+        parents: dict[tuple[str, str], tuple[str, str]] = {}
+        for key, current in records.items():
+            source = current.get("source")
+            source_text = None
+            if isinstance(source, str) and PurePosixPath(source).name in {
+                "参考图提示词.md", "图片提示词.md", "分镜.md"
+            }:
+                if source not in sources:
+                    try:
+                        pure_source = self._safe_relative(source)
+                    except DashboardError:
+                        sources[source] = None
+                    else:
+                        sources[source], _ = self._read_document(directory, pure_source.as_posix())
+                source_text = sources[source]
+            expected_source = current.get("source_sha256")
+            if source_text is None:
+                reasons[key].append("提示词来源缺失或不可读")
+            elif not isinstance(expected_source, str) or re.fullmatch(r"[0-9a-f]{64}", expected_source) is None:
+                reasons[key].append("提示词版本无法核对")
+            elif _version(source_text.encode("utf-8")) != expected_source:
+                reasons[key].append("提示词已变化")
+            output = current.get("output")
+            if isinstance(output, str) and output not in digests:
+                digests[output] = self._media_digest(directory, output)
+            output_digest = digests.get(output) if isinstance(output, str) else None
+            if output_digest is None:
+                reasons[key].append("输出图片缺失或不可读")
+            elif output_digest != current.get("sha256"):
+                reasons[key].append("输出图片字节已变化")
+
+            dependency = current.get("depends_on_output")
+            parent_id = current.get("depends_on_job_id")
+            if dependency is None and parent_id is None and current.get("stage") != "derived":
+                continue
+            if not isinstance(dependency, Mapping) or not isinstance(parent_id, str):
+                reasons[key].append("父图依赖无法核对")
+                continue
+            candidates = jobs.get(parent_id, [])
+            if len(candidates) != 1:
+                reasons[key].append("父图记录缺失" if not candidates else "父图记录不唯一")
+                continue
+            parent_key = candidates[0]
+            parent = records[parent_key]
+            parents[key] = parent_key
+            if (
+                parent.get("output") != dependency.get("path")
+                or parent.get("sha256") != dependency.get("sha256")
+            ):
+                reasons[key].append("父图已更新")
+
+        # Resolve every dependency before rendering, including cross-group links.
+        # Walk iteratively so long chains and cycles cannot exhaust Python's stack.
+        resolved: set[tuple[str, str]] = set()
+        for origin in records:
+            chain: list[tuple[str, str]] = []
+            seen: dict[tuple[str, str], int] = {}
+            node = origin
+            while node not in resolved:
+                if node in seen:
+                    for member in chain[seen[node]:]:
+                        reasons[member].append("父图依赖成环")
+                    break
+                seen[node] = len(chain)
+                chain.append(node)
+                next_parent = parents.get(node)
+                if next_parent is None:
+                    break
+                node = next_parent
+            for member in reversed(chain):
+                member_parent = parents.get(member)
+                if member_parent is not None and reasons[member_parent]:
+                    reasons[member].append("父图已失效")
+                resolved.add(member)
+
+        groups: dict[str, list[dict[str, Any]]] = {}
+        for key in sorted(records):
+            group_id, view_id = key
+            current = records[key]
+            versions = raw_records[key].get("versions")
+            history = [
+                {
+                    "version": entry.get("version"),
+                    "output": entry.get("output"),
+                    "created_at": entry.get("created_at"),
+                    "status": "superseded",
+                }
+                for entry in (versions if isinstance(versions, list) else [])
+                if isinstance(entry, Mapping)
+            ]
+            groups.setdefault(group_id, []).append(
+                {
+                    "id": view_id,
+                    "stage": current.get("stage"),
+                    "version": current.get("version"),
+                    "output": current.get("output"),
+                    "sha256": current.get("sha256"),
+                    "source": current.get("source"),
+                    "source_entry": current.get("source_entry"),
+                    "depends_on_job_id": current.get("depends_on_job_id"),
+                    "created_at": current.get("created_at"),
+                    "status": "expired" if reasons[key] else "current",
+                    "reasons": list(dict.fromkeys(reasons[key])),
+                    "history": history,
+                }
+            )
+        return {"groups": [{"id": group_id, "views": group_views} for group_id, group_views in groups.items()], "problems": []}
+
+    def _episode_references(
+        self,
+        directory: Directory,
+        base: str,
+        texts: Mapping[str, str | None],
+    ) -> dict[str, Any]:
+        return self._reference_manifest(
+            directory,
+            f"{base}/制作成果/references/index.json",
+            {f"{base}/{name}": content for name, content in texts.items()},
+        )
+
+    def references(self, project_id: str) -> dict[str, Any]:
+        """Reference-sheet versions for a project without an episode tree."""
+
+        with self._pinned_project(project_id) as (directory, _root):
+            texts: dict[str, str | None] = {}
+            problems: list[str] = []
+            for name in ("参考图提示词.md", "图片提示词.md"):
+                text, problem = self._read_document(directory, name)
+                texts[name] = text
+                if problem:
+                    problems.append(problem)
+            parsed = self._reference_manifest(
+                directory,
+                "production/reference/index.json",
+                texts,
+            )
+            parsed["problems"] = problems + parsed["problems"]
+            media: dict[str, str] = {}
+            for group in parsed["groups"]:
+                for view in group.get("views", []):
+                    output = view.get("output")
+                    if isinstance(output, str) and self._media_available(
+                        directory, output
+                    ):
+                        media[output] = output
+            parsed["media"] = media
+        return parsed
+
+    def update_staging(
+        self,
+        project_id: str,
+        episode: str,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Save the editor's positions into the one Markdown scene block."""
+
+        if views.EPISODE_ID_RE.fullmatch(episode) is None:
+            raise DashboardError(HTTPStatus.BAD_REQUEST, "unknown episode")
+        expected_version = payload.get("expectedVersion")
+        if (
+            not isinstance(expected_version, str)
+            or re.fullmatch(r"[0-9a-f]{64}", expected_version) is None
+        ):
+            raise DashboardError(
+                HTTPStatus.BAD_REQUEST, "expectedVersion must be a SHA-256 digest"
+            )
+        scene_id = payload.get("scene")
+        if (
+            not isinstance(scene_id, str)
+            or views.check.SCENE_ID_RE.fullmatch(scene_id) is None
+        ):
+            raise DashboardError(HTTPStatus.BAD_REQUEST, "invalid scene")
+        with self._pinned_project(project_id) as (directory, _root):
+            root_name, episodes = self._episode_ids(directory)
+            if root_name is None or episode not in episodes:
+                raise DashboardError(HTTPStatus.NOT_FOUND, "episode not found")
+            visual, visual_problem = self._read_document(
+                directory, f"{root_name}/{episode}/视觉设定.md"
+            )
+            storyboard, storyboard_problem = self._read_document(
+                directory, f"{root_name}/{episode}/分镜.md"
+            )
+            if visual_problem or storyboard_problem or storyboard is None:
+                raise DashboardError(
+                    HTTPStatus.BAD_REQUEST,
+                    "scene staging cannot be opened safely",
+                )
+            current_version = _version(storyboard.encode("utf-8"))
+            if current_version != expected_version:
+                raise DashboardError(
+                    HTTPStatus.CONFLICT, "file changed since it was opened"
+                )
+            space_views = views.parse_space_views(visual or "")
+            blocks = views.parse_scene_blocking(
+                views.check._storyboard_head(storyboard), space_views
+            )
+            block = next(
+                (candidate for candidate in blocks if candidate["scene"] == scene_id),
+                None,
+            )
+            if block is None:
+                raise DashboardError(HTTPStatus.BAD_REQUEST, "scene staging not found")
+            view = block.get("view")
+            if not isinstance(view, dict):
+                raise DashboardError(
+                    HTTPStatus.BAD_REQUEST,
+                    "scene staging has no structured space view",
+                )
+            raw_positions = payload.get("positions")
+            if not isinstance(raw_positions, list):
+                raise DashboardError(HTTPStatus.BAD_REQUEST, "positions are required")
+            current_positions = {
+                position["name"]: position for position in block["positions"]
+            }
+            supplied: dict[str, Mapping[str, Any]] = {}
+            for item in raw_positions:
+                if not isinstance(item, Mapping):
+                    raise DashboardError(
+                        HTTPStatus.BAD_REQUEST, "position must be an object"
+                    )
+                name = item.get("name")
+                if not isinstance(name, str) or name not in current_positions:
+                    raise DashboardError(
+                        HTTPStatus.BAD_REQUEST, "position names cannot change"
+                    )
+                if name in supplied:
+                    raise DashboardError(
+                        HTTPStatus.BAD_REQUEST, "position names must be unique"
+                    )
+                supplied[name] = item
+            if set(supplied) != set(current_positions):
+                raise DashboardError(
+                    HTTPStatus.BAD_REQUEST, "positions cannot be added or removed"
+                )
+            items = {
+                item["id"]: item for item in (view.get("items") or [])
+            }
+            normalized: list[dict[str, Any]] = []
+            for name, current in current_positions.items():
+                item = supplied[name]
+                if item.get("present") is not current["present"]:
+                    raise DashboardError(
+                        HTTPStatus.BAD_REQUEST,
+                        "presence cannot change in the staging editor",
+                    )
+                if not current["present"]:
+                    normalized.append(
+                        {
+                            "name": name,
+                            "present": False,
+                            "item": None,
+                            "side": None,
+                            "along": None,
+                            "posture": "",
+                            "facing": "",
+                        }
+                    )
+                    continue
+                object_id = item.get("item")
+                side = item.get("side")
+                posture = item.get("posture")
+                facing = item.get("facing")
+                along = item.get("along")
+                if object_id not in items:
+                    raise DashboardError(
+                        HTTPStatus.BAD_REQUEST, "position object is invalid"
+                    )
+                if (
+                    side not in STAGE_SIDES
+                    or posture not in STAGE_POSTURES
+                    or facing not in STAGE_FACINGS
+                ):
+                    raise DashboardError(
+                        HTTPStatus.BAD_REQUEST, "position attributes are invalid"
+                    )
+                if (
+                    isinstance(along, bool)
+                    or not isinstance(along, (int, float))
+                    or not math.isfinite(float(along))
+                    or not 0 <= float(along) <= 1
+                ):
+                    raise DashboardError(
+                        HTTPStatus.BAD_REQUEST, "position along must be from 0 to 1"
+                    )
+                if side == "on" and float(along) != 0.5:
+                    raise DashboardError(
+                        HTTPStatus.BAD_REQUEST,
+                        "a person on an object must use along 0.5",
+                    )
+                if side == "on" and not items[object_id]["seat"]:
+                    raise DashboardError(
+                        HTTPStatus.BAD_REQUEST, "target object is not seatable"
+                    )
+                normalized.append(
+                    {
+                        "name": name,
+                        "present": True,
+                        "item": object_id,
+                        "side": side,
+                        "along": float(along),
+                        "posture": posture,
+                        "facing": facing,
+                    }
+                )
+            groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+            for position in normalized:
+                if position["present"] and position["side"] != "on":
+                    groups.setdefault(
+                        (position["item"], position["side"]), []
+                    ).append(position)
+            for positions in groups.values():
+                ordered = sorted(positions, key=lambda position: position["along"])
+                for before, after in zip(ordered, ordered[1:]):
+                    if after["along"] - before["along"] < STAGE_MIN_APART:
+                        raise DashboardError(
+                            HTTPStatus.BAD_REQUEST,
+                            "two people on the same object side are too close",
+                        )
+            extras = payload.get("extras", block["extras"])
+            extras_where = payload.get("extrasWhere", block["extrasWhere"])
+            if (
+                isinstance(extras, bool)
+                or not isinstance(extras, int)
+                or not 0 <= extras <= 200
+            ):
+                raise DashboardError(
+                    HTTPStatus.BAD_REQUEST, "extras must be an integer from 0 to 200"
+                )
+            if (
+                not isinstance(extras_where, str)
+                or len(extras_where) > 120
+                or "\n" in extras_where
+                or "\r" in extras_where
+            ):
+                raise DashboardError(
+                    HTTPStatus.BAD_REQUEST, "extrasWhere is invalid"
+                )
+            extras_where = extras_where.strip()
+            if extras > 0 and not extras_where:
+                raise DashboardError(
+                    HTTPStatus.BAD_REQUEST,
+                    "extras need a location",
+                )
+            if extras == 0 and extras_where:
+                raise DashboardError(
+                    HTTPStatus.BAD_REQUEST,
+                    "an empty extras group cannot have a location",
+                )
+            updated = views.render_scene_block(
+                storyboard,
+                scene_id,
+                normalized,
+                extras,
+                extras_where,
+            )
+            if updated == storyboard:
+                return {
+                    "saved": False,
+                    "version": current_version,
+                    "block": block,
+                }
+            relative = f"{root_name}/{episode}/分镜.md"
+        result = self.write_text(project_id, relative, updated, expected_version)
+        refreshed = views.parse_scene_blocking(
+            views.check._storyboard_head(updated), space_views
+        )
+        saved_block = next(
+            (candidate for candidate in refreshed if candidate["scene"] == scene_id),
+            None,
+        )
+        return {**result, "block": saved_block}
+
     def _read_episode(
         self, directory: Directory, root: str, episode: str
     ) -> tuple[dict[str, Any], dict[str, str | None], list[str]]:
@@ -1077,9 +1533,27 @@ class ProjectStore:
                 paths["review"] = relative
             if problem:
                 unreadable.append(problem)
-        parsed = views.read_episode(episode, texts, review_text)
+        manifest_text, manifest_problem = self._read_document(directory, "short-drama.json")
+        try:
+            manifest = json.loads(manifest_text) if manifest_text is not None else None
+        except json.JSONDecodeError:
+            manifest = None
+        parsed = views.read_episode(
+            episode, texts, review_text,
+            pacing_rate=views.check.pacing_rate_from_manifest(manifest),
+            prompt_language=views.check.prompt_language_from_manifest(manifest) if manifest is not None else None,
+            file_exists=lambda locator: self._media_available(directory, locator),
+        )
+        if manifest_problem or manifest is None:
+            parsed["checks"]["diagnostics"].append("项目设置暂时无法核对，对白未作项目语速估时")
+        parsed["documentVersions"] = {
+            name: _version(text.encode("utf-8")) if text is not None else None
+            for name, text in texts.items()
+        }
         parsed["problems"] = unreadable + parsed["problems"]
         parsed["hasReviewText"] = review_text is not None
+        parsed["references"] = self._episode_references(directory, base, texts)
+        parsed["problems"].extend(parsed["references"]["problems"])
         return parsed, paths, unreadable
 
     def _episode_media(
@@ -1104,10 +1578,24 @@ class ProjectStore:
                 if self._media_available(directory, candidate):
                     clips[cut["id"]] = candidate
                     break
+        stage_views: dict[str, str] = {}
+        for block in (parsed.get("board") or {}).get("blocking", []):
+            view = block.get("view") or {}
+            image = view.get("image")
+            if image and self._media_available(directory, image):
+                stage_views[str(view["id"])] = image
         film = f"{root}/{episode}/{views.FILM}"
+        reference_outputs: dict[str, str] = {}
+        for group in (parsed.get("references") or {}).get("groups", []):
+            for view in group.get("views", []):
+                output = view.get("output")
+                if isinstance(output, str) and self._media_available(directory, output):
+                    reference_outputs[output] = output
         return {
             "frames": frames,
             "clips": clips,
+            "stageViews": stage_views,
+            "referenceOutputs": reference_outputs,
             "film": film if self._media_available(directory, film) else None,
         }
 
@@ -1168,7 +1656,11 @@ class ProjectStore:
                         "must": [
                             {"id": item["id"], "title": item["title"]} for item in musts
                         ],
-                        "problems": len(parsed["problems"]),
+                        "problems": len(parsed["problems"]) + len(parsed["checks"]["errors"]),
+                        "checks": {
+                            "errors": len(parsed["checks"]["errors"]),
+                            "diagnostics": len(parsed["checks"]["diagnostics"]),
+                        },
                     }
                 )
                 for item in (parsed.get("settings") or {}).get("items", []):
@@ -1188,6 +1680,7 @@ class ProjectStore:
         rhythm = status.get("rhythm_profile") or None
         return {
             "title": status.get("title"),
+            "project_mode": status.get("project_mode") or "drama",
             "format": status.get("format") or {},
             "rhythm": rhythm,
             "lifecycle": status.get("lifecycle"),
@@ -1504,6 +1997,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     ),
                 )
                 return
+            if path == "/api/references":
+                self._json(
+                    HTTPStatus.OK,
+                    self.server.store.references(self._one(query, "project")),
+                )
+                return
             if path == "/api/search":
                 scope = (query.get("scope") or ["ep"])[0]
                 episode = query["ep"][0] if query.get("ep") else None
@@ -1632,22 +2131,56 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             )
 
     def do_POST(self) -> None:
-        path, _ = self._query()
+        path, query = self._query()
         if not self._security_ok(require_token=path.startswith("/api/")):
             return
-        if path != "/api/session":
+        if path == "/api/session":
+            self._json(
+                HTTPStatus.OK,
+                {"status": "ready", "apiBase": self.server.api_prefix},
+                headers={
+                    "Set-Cookie": (
+                        f"{self.server.session_cookie}={self.server.access_token}; "
+                        f"HttpOnly; SameSite=Strict; Path={self.server.api_prefix}/"
+                    )
+                },
+            )
+            return
+        if path != "/api/staging":
             self._json(HTTPStatus.NOT_FOUND, {"error": "API endpoint not found"})
             return
-        self._json(
-            HTTPStatus.OK,
-            {"status": "ready", "apiBase": self.server.api_prefix},
-            headers={
-                "Set-Cookie": (
-                    f"{self.server.session_cookie}={self.server.access_token}; "
-                    f"HttpOnly; SameSite=Strict; Path={self.server.api_prefix}/"
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length <= 0 or length > self.server.store.max_request_bytes:
+                raise DashboardError(
+                    HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "request body is empty or too large"
                 )
-            },
-        )
+            if self.headers.get_content_type() != "application/json":
+                raise DashboardError(
+                    HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
+                    "Content-Type must be application/json",
+                )
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            if not isinstance(payload, dict):
+                raise DashboardError(
+                    HTTPStatus.BAD_REQUEST, "request body must be an object"
+                )
+            result = self.server.store.update_staging(
+                self._one(query, "project"),
+                self._one(query, "ep"),
+                payload,
+            )
+            self._json(HTTPStatus.OK, result)
+        except DashboardError as exc:
+            self._json(exc.status, {"error": exc.message})
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            self._json(HTTPStatus.BAD_REQUEST, {"error": "invalid JSON request"})
+        except OSError as exc:
+            self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+        except Exception:
+            self._json(
+                HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "internal dashboard error"}
+            )
 
 
 def workspace_fingerprint(workspace: Path) -> str:

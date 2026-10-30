@@ -1351,7 +1351,10 @@ class CreatorExportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = self.make_project(directory)
             alias = Path(directory) / "alias"
-            os.symlink(root, alias, target_is_directory=True)
+            try:
+                os.symlink(root, alias, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                self.skipTest("this platform cannot create symlinks")
             with self.assertRaises(ValueError):
                 project_tool.build_creator_export(root, out=alias, overwrite=True)
             self.assertTrue((root / "剧集/EP001/剧本.md").is_file())
@@ -1434,7 +1437,10 @@ class CreatorExportTests(unittest.TestCase):
     def test_export_reports_names_that_cannot_be_unpacked_on_windows(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = self.make_project(directory)
-            (root / "剧集/EP001/制作成果/con.mp4").write_bytes(b"v")
+            reserved = root / "剧集/EP001/制作成果/con.mp4"
+            reserved.write_bytes(b"v")
+            if not reserved.is_file():
+                self.skipTest("this filesystem reserves the device name")
             out = Path(directory) / "handover"
             result = project_tool.build_creator_export(root, out=out)
             self.assertEqual(
@@ -1557,6 +1563,8 @@ class AcceptedBytesAreTheAcceptedBytesTests(unittest.TestCase):
     def test_both_implementations_agree_on_every_state(self) -> None:
         """The path reader and the fd reader are one state machine, not two."""
 
+        if os.name == "nt":
+            self.skipTest("directory descriptors are unavailable on Windows")
         with tempfile.TemporaryDirectory() as directory:
             root = self.make_accepted_project(directory)
             screenplay = root / "剧集/EP001/screenplay.md"

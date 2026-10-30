@@ -30,6 +30,7 @@ from typing import Any
 OPENAI_MODEL = "gpt-image-2"
 MINIMAX_MUSIC_MODEL = "music-3.0"
 OPENAI_BASE_URL = "https://api.openai.com/v1"
+QWEN_IMAGE_API_BASE_URL = "https://api.apimart.ai/v1"
 SEEDANCE_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
 MINIMAX_BASE_URL = "https://api.minimax.io/v1"
 MINIMAX_VIDEO_BASE_URL = "https://api.minimax.io/v2"
@@ -39,6 +40,16 @@ MAX_REFERENCE_BYTES = 50 * 1024 * 1024
 MAX_MULTIPART_BYTES = 200 * 1024 * 1024
 MAX_ERROR_BODY_BYTES = 64 * 1024
 TERMINAL_FAILURES = {"failed", "cancelled", "canceled", "timeout", "expired"}
+PENDING_IMAGE_TASKS = {
+    "submitted",
+    "pending",
+    "queued",
+    "in_progress",
+    "processing",
+    "running",
+}
+OPENAI_IMAGE_REFERENCE_ROLES = {"reference_image": "image_url"}
+QWEN_IMAGE_API_REFERENCE_ROLES = {"reference_image": "image_url"}
 SEEDANCE_RATIOS = {"adaptive", "1:1", "3:4", "4:3", "9:16", "16:9", "21:9"}
 SEEDANCE_REFERENCE_ROLES = {
     "first_frame": "image_url",
@@ -91,6 +102,23 @@ INLINE_REFERENCE_MIME = {
 }
 GPT_IMAGE_MIN_PIXELS = 655_360
 GPT_IMAGE_MAX_PIXELS = 8_294_400
+QWEN_IMAGE_DEFAULT_NEGATIVE = (
+    "text, watermark, logo, extra fingers, malformed hands, duplicate person, "
+    "collage, character sheet, multiple views"
+)
+QWEN_IMAGE_SIZES = {
+    "2:3": (1056, 1584),
+    "4:5": (1152, 1440),
+    "1:1": (1328, 1328),
+}
+QWEN_IMAGE_DEFAULTS = {
+    "unet": "qwen_image_2.1_int8_convrot.safetensors",
+    "clip": "qwen3vl_8b_int8_convrot.safetensors",
+    "vae": "qwen_image_2.1_vae_bf16.safetensors",
+    "shift": 3.1,
+    "steps": 20,
+    "cfg": 2.5,
+}
 MINIMUM_PYTHON = (3, 9)
 if sys.version_info < MINIMUM_PYTHON:
     raise SystemExit("provider_adapters.py requires Python 3.9 or newer")
@@ -676,8 +704,12 @@ def _minimax_video_runtime_profile() -> tuple[
     return allowed_ratios, allowed_resolutions, duration_range
 
 
-def compile_gpt_image_2_payload(job: Mapping[str, Any]) -> dict[str, Any]:
+def compile_gpt_image_2_payload(
+    job: Mapping[str, Any], *, model: str = OPENAI_MODEL
+) -> dict[str, Any]:
     """Compile an image job into GPT Image 2 generation/edit fields."""
+    if not isinstance(model, str) or not model.strip() or len(model.strip()) > 120:
+        raise ValueError("GPT Image model must be explicitly configured")
     prompt, parameters = _require_job(job, "image")
     parameters = _take(
         parameters,
@@ -752,12 +784,272 @@ def compile_gpt_image_2_payload(job: Mapping[str, Any]) -> dict[str, Any]:
     ):
         raise ValueError("GPT Image references must be supported image files")
     return {
-        "model": OPENAI_MODEL,
+        "model": model.strip(),
         "prompt": prompt,
         "n": 1,
         "output_format": formats[suffix],
         **parameters,
     }
+
+
+def compile_qwen_image_job(job: Mapping[str, Any]) -> dict[str, Any]:
+    """Compile an image job into the Qwen Image ComfyUI workflow inputs."""
+    prompt, parameters = _require_job(job, "image")
+    parameters = _take(
+        parameters,
+        {
+            "ratio",
+            "width",
+            "height",
+            "seed",
+            "steps",
+            "cfg",
+            "shift",
+            "negative_prompt",
+            "prompt_language",
+        },
+    )
+    prompt_language = _pop_prompt_language(parameters)
+    prompt = _prompt_with_reference_contract(
+        prompt, job, prompt_language=prompt_language
+    )
+    references = job.get("references", [])
+    if not isinstance(references, list) or len(references) > 3:
+        raise ValueError("Qwen Image accepts at most three references")
+    if any(
+        not isinstance(reference, str)
+        or Path(reference).suffix.casefold() not in {".png", ".jpg", ".jpeg", ".webp"}
+        for reference in references
+    ):
+        raise ValueError("Qwen Image references must be supported image files")
+    if Path(job["outputs"][0]).suffix.casefold() != ".png":
+        raise ValueError("Qwen Image adapter writes PNG output")
+    ratio = parameters.pop("ratio", None)
+    width = parameters.pop("width", None)
+    height = parameters.pop("height", None)
+    if ratio is not None:
+        if ratio not in QWEN_IMAGE_SIZES or width is not None or height is not None:
+            raise ValueError("Qwen Image ratio must be 2:3, 4:5 or 1:1 without width/height")
+        width, height = QWEN_IMAGE_SIZES[ratio]
+    else:
+        if width is None or height is None:
+            raise ValueError("Qwen Image requires ratio or both width and height")
+        if (
+            not isinstance(width, int)
+            or not isinstance(height, int)
+            or isinstance(width, bool)
+            or isinstance(height, bool)
+            or width <= 0
+            or height <= 0
+            or width % 16
+            or height % 16
+            or width > 2048
+            or height > 2048
+        ):
+            raise ValueError(
+                "Qwen Image dimensions must be positive multiples of 16 no larger than 2048"
+            )
+    seed = parameters.pop("seed", secrets.randbelow(2**31))
+    if not isinstance(seed, int) or isinstance(seed, bool) or not 0 <= seed < 2**63:
+        raise ValueError("Qwen Image seed must be a non-negative integer")
+    steps = parameters.pop("steps", QWEN_IMAGE_DEFAULTS["steps"])
+    cfg = parameters.pop("cfg", QWEN_IMAGE_DEFAULTS["cfg"])
+    shift = parameters.pop("shift", QWEN_IMAGE_DEFAULTS["shift"])
+    if not isinstance(steps, int) or isinstance(steps, bool) or not 1 <= steps <= 100:
+        raise ValueError("Qwen Image steps must be between 1 and 100")
+    for label, value in (("cfg", cfg), ("shift", shift)):
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
+            raise ValueError(f"Qwen Image {label} must be positive")
+    negative = parameters.pop(
+        "negative_prompt", QWEN_IMAGE_DEFAULT_NEGATIVE
+    )
+    if not isinstance(negative, str) or not negative.strip() or len(negative) > 32000:
+        raise ValueError("Qwen Image negative_prompt is invalid")
+    return {
+        "prompt": prompt,
+        "negative": negative.strip(),
+        "width": width,
+        "height": height,
+        "seed": seed,
+        "steps": steps,
+        "cfg": float(cfg),
+        "shift": float(shift),
+        "reference_count": len(references),
+    }
+
+
+def compile_qwen_image_api_payload(
+    job: Mapping[str, Any], *, model: str
+) -> dict[str, Any]:
+    """Compile the APIMart/OpenAI-compatible Qwen Image request.
+
+    The hosted API does not expose the ComfyUI sampler fields. Keeping a
+    separate compiler prevents a local seed/steps job from being silently sent
+    to a provider that would ignore or reject it.
+    """
+
+    if not isinstance(model, str) or not model.strip() or len(model.strip()) > 120:
+        raise ValueError("Qwen Image API model must be explicitly configured")
+    prompt, parameters = _require_job(job, "image")
+    parameters = _take(
+        parameters,
+        {"ratio", "width", "height", "negative_prompt", "prompt_language"},
+    )
+    prompt_language = _pop_prompt_language(parameters)
+    prompt = _prompt_with_reference_contract(
+        prompt, job, prompt_language=prompt_language
+    )
+    if len(prompt) > 32000:
+        raise ValueError("Qwen Image API prompt exceeds the provider limit")
+    ratio = parameters.pop("ratio", None)
+    width = parameters.pop("width", None)
+    height = parameters.pop("height", None)
+    if ratio is not None:
+        if ratio not in QWEN_IMAGE_SIZES or width is not None or height is not None:
+            raise ValueError("Qwen Image ratio must be 2:3, 4:5 or 1:1 without width/height")
+        width, height = QWEN_IMAGE_SIZES[ratio]
+    elif width is None or height is None:
+        raise ValueError("Qwen Image requires ratio or both width and height")
+    if (
+        not isinstance(width, int)
+        or not isinstance(height, int)
+        or isinstance(width, bool)
+        or isinstance(height, bool)
+        or not 512 <= width <= 2048
+        or not 512 <= height <= 2048
+    ):
+        raise ValueError("Qwen Image API dimensions must be integers from 512 to 2048")
+    references = job.get("references", [])
+    if not isinstance(references, list) or len(references) > 3:
+        raise ValueError("Qwen Image accepts at most three references")
+    if any(
+        not isinstance(reference, str)
+        or Path(reference).suffix.casefold()
+        not in {".png", ".jpg", ".jpeg", ".webp"}
+        for reference in references
+    ):
+        raise ValueError("Qwen Image references must be supported image files")
+    if Path(job["outputs"][0]).suffix.casefold() != ".png":
+        raise ValueError("Qwen Image adapter writes PNG output")
+    body: dict[str, Any] = {
+        "model": model.strip(),
+        "prompt": prompt,
+        "n": 1,
+        "size": f"{width}x{height}",
+    }
+    negative = parameters.pop("negative_prompt", None)
+    if negative is not None:
+        if not isinstance(negative, str) or not negative.strip():
+            raise ValueError("Qwen Image negative_prompt must be non-empty")
+        body["negative_prompt"] = negative.strip()
+    if parameters:
+        raise ValueError(
+            "unsupported provider parameters: " + ", ".join(sorted(parameters))
+        )
+    return body
+
+
+def qwen_image_workflow(
+    compiled: Mapping[str, Any],
+    reference_names: Sequence[str],
+    *,
+    unet: str | None = None,
+    clip: str | None = None,
+    vae: str | None = None,
+) -> dict[str, Any]:
+    """Return the deterministic ComfyUI API workflow for Qwen Image."""
+    if len(reference_names) > 3:
+        raise ValueError("Qwen Image accepts at most three references")
+    graph: dict[str, Any] = {
+        "unet": {
+            "class_type": "UNETLoader",
+            "inputs": {
+                "unet_name": unet or QWEN_IMAGE_DEFAULTS["unet"],
+                "weight_dtype": "default",
+            },
+        },
+        "clip": {
+            "class_type": "CLIPLoader",
+            "inputs": {
+                "clip_name": clip or QWEN_IMAGE_DEFAULTS["clip"],
+                "type": "qwen_image",
+                "device": "default",
+            },
+        },
+        "vae": {
+            "class_type": "VAELoader",
+            "inputs": {"vae_name": vae or QWEN_IMAGE_DEFAULTS["vae"]},
+        },
+        "ms": {
+            "class_type": "ModelSamplingAuraFlow",
+            "inputs": {
+                "model": ["unet", 0],
+                "shift": compiled["shift"],
+                "sampling": "flow",
+            },
+        },
+        "neg": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"clip": ["clip", 0], "text": compiled["negative"]},
+        },
+        "lat": {
+            "class_type": "EmptySD3LatentImage",
+            "inputs": {
+                "width": compiled["width"],
+                "height": compiled["height"],
+                "batch_size": 1,
+            },
+        },
+        "ks": {
+            "class_type": "KSampler",
+            "inputs": {
+                "model": ["ms", 0],
+                "positive": ["pos", 0],
+                "negative": ["neg", 0],
+                "latent_image": ["lat", 0],
+                "seed": compiled["seed"],
+                "steps": compiled["steps"],
+                "cfg": compiled["cfg"],
+                "sampler_name": "euler",
+                "scheduler": "simple",
+                "denoise": 1.0,
+            },
+        },
+        "dec": {
+            "class_type": "VAEDecode",
+            "inputs": {"samples": ["ks", 0], "vae": ["vae", 0]},
+        },
+        "save": {
+            "class_type": "SaveImage",
+            "inputs": {
+                "images": ["dec", 0],
+                "filename_prefix": "short-drama/qwen-image",
+            },
+        },
+    }
+    if not reference_names:
+        graph["pos"] = {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"clip": ["clip", 0], "text": compiled["prompt"]},
+        }
+    else:
+        encoded: dict[str, Any] = {
+            "clip": ["clip", 0],
+            "vae": ["vae", 0],
+            "prompt": compiled["prompt"],
+        }
+        for index, name in enumerate(reference_names, 1):
+            node = f"ref{index}"
+            graph[node] = {
+                "class_type": "LoadImage",
+                "inputs": {"image": name},
+            }
+            encoded[f"image{index}"] = [node, 0]
+        graph["pos"] = {
+            "class_type": "TextEncodeQwenImageEditPlus",
+            "inputs": encoded,
+        }
+    return graph
 
 
 MINIMAX_SPEECH_EMOTIONS = {
@@ -957,6 +1249,162 @@ def _request_json(
             f"{provider} returned an invalid response", code="invalid_response"
         )
     return document, headers
+
+
+def _image_task_id(document: Mapping[str, Any]) -> str | None:
+    """Read one asynchronous image task id from a submission response."""
+
+    data = document.get("data")
+    entries = data if isinstance(data, list) else [data]
+    if len(entries) != 1 or not isinstance(entries[0], Mapping):
+        return None
+    candidate = entries[0].get("task_id") or entries[0].get("id")
+    if isinstance(candidate, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,199}", candidate):
+        return candidate
+    return None
+
+
+def _image_task_url(task: Mapping[str, Any]) -> str | None:
+    result = task.get("result")
+    images = result.get("images") if isinstance(result, Mapping) else None
+    if not isinstance(images, list) or len(images) != 1 or not isinstance(images[0], Mapping):
+        return None
+    urls = images[0].get("url")
+    if isinstance(urls, str):
+        urls = [urls]
+    if not isinstance(urls, list) or not urls:
+        return None
+    candidate = urls[0]
+    if not isinstance(candidate, str):
+        return None
+    parsed = urllib.parse.urlparse(candidate)
+    if parsed.scheme != "https" or not parsed.netloc:
+        return None
+    return candidate
+
+
+def _poll_image_task(
+    job: Mapping[str, Any],
+    *,
+    base: str,
+    token: str,
+    task_id: str,
+    provider: str,
+) -> tuple[Path, str]:
+    """Poll one already-submitted image task and download its single result."""
+
+    try:
+        interval = float(os.environ.get("IMAGE_TASK_POLL_INTERVAL", "3"))
+        timeout = float(os.environ.get("IMAGE_TASK_TIMEOUT_SECONDS", "600"))
+    except ValueError as exc:
+        raise AdapterFailure(
+            "image task polling configuration is invalid",
+            category="configuration",
+            code="invalid_poll_configuration",
+        ) from exc
+    if interval <= 0 or timeout <= 0:
+        raise AdapterFailure(
+            "image task polling configuration is invalid",
+            category="configuration",
+            code="invalid_poll_configuration",
+        )
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        document, _headers = _request_json(
+            f"{base}/tasks/{urllib.parse.quote(task_id, safe='')}?language=en",
+            provider=provider,
+            method="GET",
+            token=token,
+        )
+        data = document.get("data")
+        task = data if isinstance(data, Mapping) else None
+        status = task.get("status") if task is not None else None
+        if status == "completed":
+            url = _image_task_url(task) if task is not None else None
+            if url is None:
+                raise AdapterFailure(
+                    f"{provider} completed without exactly one image URL",
+                    code="missing_image_url",
+                    request_id=task_id,
+                )
+            return _download(
+                job, url, job["outputs"][0], provider=provider
+            ), task_id
+        if isinstance(status, str) and status.casefold() in TERMINAL_FAILURES:
+            raise AdapterFailure(
+                f"{provider} image task failed",
+                code="task_" + status.casefold(),
+                request_id=task_id,
+            )
+        if status not in PENDING_IMAGE_TASKS:
+            raise AdapterFailure(
+                f"{provider} returned an unknown image task status",
+                code="unknown_task_status",
+                request_id=task_id,
+            )
+        time.sleep(interval)
+    raise AdapterFailure(
+        f"{provider} image task polling timed out",
+        category="timeout",
+        code="task_poll_timeout",
+        request_id=task_id,
+        retryable=True,
+    )
+
+
+def _finish_image_response(
+    job: Mapping[str, Any],
+    document: Mapping[str, Any],
+    *,
+    base: str,
+    token: str,
+    provider: str,
+    request_id: str | None,
+) -> tuple[Path, str | None]:
+    """Handle a synchronous image body or the async task every relay uses."""
+
+    task_id = _image_task_id(document)
+    if task_id is not None:
+        # The task may already be billed. Record it before the first poll.
+        _record_handle(job, task_id)
+        path, finished_id = _poll_image_task(
+            job,
+            base=base,
+            token=token,
+            task_id=task_id,
+            provider=provider,
+        )
+        return path, finished_id
+
+    data = document.get("data")
+    entry = (
+        data[0]
+        if isinstance(data, list)
+        and len(data) == 1
+        and isinstance(data[0], Mapping)
+        else None
+    )
+    encoded = entry.get("b64_json") if entry is not None else None
+    if isinstance(encoded, str):
+        try:
+            content = base64.b64decode(encoded, validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise AdapterFailure(
+                f"{provider} returned invalid image data",
+                code="invalid_image_data",
+                request_id=request_id,
+            ) from exc
+        return _temporary_output(job, job["outputs"][0], content), request_id
+    url = entry.get("url") if entry is not None else None
+    if isinstance(url, str) and url:
+        return _download(
+            job, url, job["outputs"][0], provider=provider
+        ), request_id
+    raise AdapterFailure(
+        f"{provider} did not return exactly one image or task",
+        code="missing_image",
+        request_id=request_id,
+    )
 
 
 def _read_reference(path: Path) -> bytes:
@@ -1361,22 +1809,65 @@ def _poll_seedance(
     )
 
 
+def _openai_reference_mode(base: str) -> str:
+    configured = os.environ.get("OPENAI_IMAGE_REFERENCE_MODE", "").strip().casefold()
+    if configured:
+        if configured not in {"multipart", "json_urls"}:
+            raise AdapterFailure(
+                "OpenAI image reference mode is invalid",
+                category="configuration",
+                code="invalid_reference_mode",
+            )
+        return configured
+    # APIMart's OpenAI-compatible image endpoint takes image_urls on
+    # /images/generations; the direct OpenAI endpoint takes multipart edits.
+    host = (urllib.parse.urlparse(base).hostname or "").casefold()
+    return "json_urls" if host == "api.apimart.ai" else "multipart"
+
+
 def _run_openai(job: Mapping[str, Any]) -> tuple[Path, str | None]:
     token = _credential("OPENAI_API_KEY")
-    body = compile_gpt_image_2_payload(job)
+    model = os.environ.get("OPENAI_IMAGE_MODEL", OPENAI_MODEL).strip()
     base = _base_url("OPENAI_BASE_URL", OPENAI_BASE_URL)
+    collecting = _collect_target(job)
+    if collecting is not None:
+        return _poll_image_task(
+            job,
+            base=base,
+            token=token,
+            task_id=collecting,
+            provider=model,
+        )
+    body = compile_gpt_image_2_payload(job, model=model)
     references = _reference_paths(job)
-    if references:
+    mode = _openai_reference_mode(base)
+    if references and mode == "json_urls":
+        body["image_urls"] = _inline_reference_urls(
+            references,
+            ["reference_image"] * len(references),
+            allowed=OPENAI_IMAGE_REFERENCE_ROLES,
+            provider=model,
+        )
+        result, headers = _request_json(
+            f"{base}/images/generations",
+            provider=model,
+            body=body,
+            token=token,
+        )
+        request_id = _request_id(headers)
+    elif references:
         encoded, content_type = _multipart(body, references)
-        request = urllib.request.Request(f"{base}/images/edits", data=encoded, method="POST")
+        request = urllib.request.Request(
+            f"{base}/images/edits", data=encoded, method="POST"
+        )
         request.add_header("Authorization", f"Bearer {token}")
         request.add_header("Content-Type", content_type)
         try:
             with urllib.request.urlopen(request, timeout=300) as response:
                 raw = response.read(MAX_JSON_RESPONSE + 1)
-                request_id = response.headers.get("x-request-id")
+                request_id = _request_id(dict(response.headers.items()))
         except urllib.error.HTTPError as exc:
-            raise _http_failure("gpt-image-2", exc) from exc
+            raise _http_failure(model, exc) from exc
         except TimeoutError as exc:
             raise AdapterFailure(
                 "OpenAI HTTP request timed out",
@@ -1408,28 +1899,358 @@ def _run_openai(job: Mapping[str, Any]) -> tuple[Path, str | None]:
     else:
         result, headers = _request_json(
             f"{base}/images/generations",
-            provider="gpt-image-2",
+            provider=model,
             body=body,
             token=token,
         )
-        request_id = headers.get("x-request-id")
-    data = result.get("data") if isinstance(result, Mapping) else None
-    image = data[0].get("b64_json") if isinstance(data, list) and len(data) == 1 and isinstance(data[0], Mapping) else None
-    if not isinstance(image, str):
+        request_id = _request_id(headers)
+    return _finish_image_response(
+        job,
+        result,
+        base=base,
+        token=token,
+        provider=model,
+        request_id=request_id,
+    )
+
+
+def _qwen_endpoint() -> tuple[str, str | None]:
+    raw = os.environ.get("COMFY_URL", "").strip().rstrip("/")
+    if not raw:
         raise AdapterFailure(
-            "OpenAI did not return exactly one image",
-            code="missing_image",
-            request_id=request_id,
+            "ComfyUI URL is not configured",
+            category="configuration",
+            code="missing_credential",
+        )
+    parsed = urllib.parse.urlparse(raw)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise AdapterFailure(
+            "ComfyUI URL is invalid",
+            category="configuration",
+            code="invalid_base_url",
+        )
+    if parsed.scheme == "http" and parsed.hostname not in {
+        "127.0.0.1",
+        "::1",
+        "localhost",
+    }:
+        raise AdapterFailure(
+            "plain HTTP is only allowed for loopback ComfyUI",
+            category="configuration",
+            code="invalid_base_url",
+        )
+    user = os.environ.get("COMFY_USER", "")
+    password = os.environ.get("COMFY_PASS", "")
+    auth = None
+    if user:
+        encoded = base64.b64encode(f"{user}:{password}".encode("utf-8")).decode("ascii")
+        auth = f"Basic {encoded}"
+    return raw, auth
+
+
+def _comfy_request(
+    url: str,
+    *,
+    auth: str | None,
+    method: str = "GET",
+    body: Mapping[str, Any] | None = None,
+    data: bytes | None = None,
+    content_type: str | None = None,
+    timeout: int = 120,
+) -> bytes:
+    request = urllib.request.Request(url, data=data, method=method)
+    if auth:
+        request.add_header("Authorization", auth)
+    if content_type:
+        request.add_header("Content-Type", content_type)
+    elif body is not None:
+        request.add_header("Content-Type", "application/json")
+        data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        request.data = data
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read(MAX_JSON_RESPONSE + 1)
+    except urllib.error.HTTPError as exc:
+        raise _http_failure("qwen-image", exc) from exc
+    except TimeoutError as exc:
+        raise AdapterFailure(
+            "ComfyUI request timed out",
+            category="timeout",
+            code="request_timeout",
+            retryable=True,
+        ) from exc
+    except (urllib.error.URLError, OSError) as exc:
+        raise AdapterFailure(
+            "ComfyUI request failed",
+            category="network",
+            code="network_error",
+            retryable=True,
+        ) from exc
+    if len(raw) > MAX_JSON_RESPONSE:
+        raise AdapterFailure("ComfyUI response is too large", code="response_too_large")
+    return raw
+
+
+def _comfy_json(
+    url: str,
+    *,
+    auth: str | None,
+    method: str = "GET",
+    body: Mapping[str, Any] | None = None,
+    data: bytes | None = None,
+    content_type: str | None = None,
+) -> dict[str, Any]:
+    raw = _comfy_request(
+        url,
+        auth=auth,
+        method=method,
+        body=body,
+        data=data,
+        content_type=content_type,
+    )
+    try:
+        document = json.loads(raw)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise AdapterFailure("ComfyUI returned invalid JSON", code="invalid_json") from exc
+    if not isinstance(document, dict):
+        raise AdapterFailure("ComfyUI returned an invalid response", code="invalid_response")
+    return document
+
+
+def _comfy_upload(
+    endpoint: str, auth: str | None, path: Path
+) -> str:
+    content = _read_reference(path)
+    media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    boundary = "short-drama-" + secrets.token_hex(16)
+    chunks = []
+    for name, value in (
+        ("subfolder", "short-drama"),
+        ("type", "input"),
+        ("overwrite", "true"),
+    ):
+        chunks.extend(
+            [
+                f"--{boundary}\r\n".encode(),
+                f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode(),
+                str(value).encode(),
+                b"\r\n",
+            ]
+        )
+    chunks.extend(
+        [
+            f"--{boundary}\r\n".encode(),
+            (
+                'Content-Disposition: form-data; name="image"; '
+                f'filename="{path.name}"\r\n'
+            ).encode(),
+            f"Content-Type: {media_type}\r\n\r\n".encode(),
+            content,
+            b"\r\n",
+            f"--{boundary}--\r\n".encode(),
+        ]
+    )
+    encoded = b"".join(chunks)
+    if len(encoded) > MAX_MULTIPART_BYTES:
+        raise ValueError("ComfyUI upload exceeds the total size limit")
+    result = _comfy_json(
+        f"{endpoint}/upload/image",
+        auth=auth,
+        method="POST",
+        data=encoded,
+        content_type=f"multipart/form-data; boundary={boundary}",
+    )
+    upload_name = result.get("name")
+    subfolder = result.get("subfolder")
+    if not isinstance(upload_name, str) or not upload_name:
+        raise AdapterFailure(
+            "ComfyUI upload did not return a name", code="missing_upload_name"
+        )
+    return (
+        f"{subfolder}/{upload_name}"
+        if isinstance(subfolder, str) and subfolder
+        else upload_name
+    )
+
+
+def _run_qwen_comfy_image(job: Mapping[str, Any]) -> tuple[Path, str | None]:
+    endpoint, auth = _qwen_endpoint()
+    compiled = compile_qwen_image_job(job)
+    names = [
+        _comfy_upload(endpoint, auth, path)
+        for path in _reference_paths(job)
+    ]
+    workflow = qwen_image_workflow(
+        compiled,
+        names,
+        unet=os.environ.get("COMFY_UNET"),
+        clip=os.environ.get("COMFY_CLIP"),
+        vae=os.environ.get("COMFY_VAE"),
+    )
+    submitted = _comfy_json(
+        f"{endpoint}/prompt",
+        auth=auth,
+        method="POST",
+        body={"prompt": workflow},
+    )
+    prompt_id = submitted.get("prompt_id")
+    if not isinstance(prompt_id, str) or not prompt_id:
+        raise AdapterFailure(
+            "ComfyUI did not return a prompt id", code="missing_prompt_id"
         )
     try:
-        content = base64.b64decode(image, validate=True)
-    except (ValueError, binascii.Error) as exc:
+        timeout = float(os.environ.get("COMFY_TIMEOUT_SECONDS", "900"))
+        interval = float(os.environ.get("COMFY_POLL_INTERVAL", "2"))
+    except ValueError as exc:
         raise AdapterFailure(
-            "OpenAI returned invalid image data",
-            code="invalid_image_data",
-            request_id=request_id,
+            "ComfyUI polling configuration is invalid",
+            category="configuration",
+            code="invalid_poll_configuration",
         ) from exc
-    return _temporary_output(job, job["outputs"][0], content), request_id
+    if timeout <= 0 or interval <= 0:
+        raise AdapterFailure(
+            "ComfyUI polling configuration is invalid",
+            category="configuration",
+            code="invalid_poll_configuration",
+        )
+    deadline = time.monotonic() + timeout
+    image_meta: Mapping[str, Any] | None = None
+    while time.monotonic() < deadline:
+        history = _comfy_json(
+            f"{endpoint}/history/{urllib.parse.quote(prompt_id, safe='')}",
+            auth=auth,
+        )
+        result = history.get(prompt_id)
+        if isinstance(result, Mapping):
+            status = result.get("status")
+            if isinstance(status, Mapping) and status.get("status_str") == "error":
+                messages = status.get("messages")
+                message = None
+                if isinstance(messages, list):
+                    failure = next(
+                        (
+                            item
+                            for item in messages
+                            if isinstance(item, list)
+                            and len(item) > 1
+                            and item[0] == "execution_error"
+                            and isinstance(item[1], Mapping)
+                        ),
+                        None,
+                    )
+                    if failure is not None:
+                        message = failure[1].get("exception_message")
+                raise AdapterFailure(
+                    "ComfyUI execution failed",
+                    code="execution_error",
+                    request_id=prompt_id if not message else None,
+                )
+            outputs = result.get("outputs")
+            save = outputs.get("save") if isinstance(outputs, Mapping) else None
+            images = save.get("images") if isinstance(save, Mapping) else None
+            if isinstance(images, list) and images and isinstance(images[0], Mapping):
+                image_meta = images[0]
+                break
+        time.sleep(interval)
+    if image_meta is None:
+        raise AdapterFailure(
+            "ComfyUI did not return an image before timeout",
+            category="timeout",
+            code="generation_timeout",
+            request_id=prompt_id,
+            retryable=True,
+        )
+    query = urllib.parse.urlencode(
+        {
+            key: image_meta[key]
+            for key in ("filename", "subfolder", "type")
+            if isinstance(image_meta.get(key), str)
+        }
+    )
+    if "filename=" not in query:
+        raise AdapterFailure(
+            "ComfyUI image metadata is incomplete", code="missing_image_name"
+        )
+    content = _comfy_request(
+        f"{endpoint}/view?{query}",
+        auth=auth,
+        timeout=300,
+    )
+    if not content:
+        raise AdapterFailure("ComfyUI returned an empty image", code="empty_image")
+    return _temporary_output(job, job["outputs"][0], content), prompt_id
+
+
+def _qwen_api_route() -> tuple[str, str] | None:
+    """Select ComfyUI or the hosted Qwen API without silent cross-routing."""
+
+    transport = os.environ.get("QWEN_IMAGE_TRANSPORT", "").strip().casefold()
+    if transport and transport not in {"api", "comfy"}:
+        raise AdapterFailure(
+            "Qwen Image transport is invalid",
+            category="configuration",
+            code="invalid_transport",
+        )
+    if transport == "comfy":
+        return None
+    api_key = os.environ.get("QWEN_IMAGE_API_KEY")
+    if transport == "api" or api_key:
+        token = _credential("QWEN_IMAGE_API_KEY")
+        base = _base_url("QWEN_IMAGE_BASE_URL", QWEN_IMAGE_API_BASE_URL)
+        return base, token
+    return None
+
+
+def _run_qwen_api_image(
+    job: Mapping[str, Any], *, base: str, token: str
+) -> tuple[Path, str | None]:
+    model = os.environ.get("QWEN_IMAGE_MODEL", "qwen-image-3.0").strip()
+    collecting = _collect_target(job)
+    if collecting is not None:
+        return _poll_image_task(
+            job,
+            base=base,
+            token=token,
+            task_id=collecting,
+            provider=model,
+        )
+    body = compile_qwen_image_api_payload(job, model=model)
+    references = _reference_paths(job)
+    if references:
+        body["image_urls"] = _inline_reference_urls(
+            references,
+            ["reference_image"] * len(references),
+            allowed=QWEN_IMAGE_API_REFERENCE_ROLES,
+            provider=model,
+        )
+    document, headers = _request_json(
+        f"{base}/images/generations",
+        provider=model,
+        body=body,
+        token=token,
+    )
+    return _finish_image_response(
+        job,
+        document,
+        base=base,
+        token=token,
+        provider=model,
+        request_id=_request_id(headers),
+    )
+
+
+def _run_qwen_image(job: Mapping[str, Any]) -> tuple[Path, str | None]:
+    route = _qwen_api_route()
+    if route is not None:
+        return _run_qwen_api_image(job, base=route[0], token=route[1])
+    return _run_qwen_comfy_image(job)
 
 
 def _run_minimax(job: Mapping[str, Any]) -> tuple[Path, str | None]:
@@ -1627,6 +2448,25 @@ def _selftest() -> None:
     }
     if compile_gpt_image_2_payload(image)["model"] != OPENAI_MODEL:
         raise RuntimeError("GPT Image 2 self-test failed")
+    if compile_gpt_image_2_payload(
+        image, model="gpt-image-2-official"
+    )["model"] != "gpt-image-2-official":
+        raise RuntimeError("configurable GPT Image model self-test failed")
+    qwen = compile_qwen_image_job(
+        {
+            **image,
+            "outputs": ["制作成果/a.png"],
+            "parameters": {"ratio": "2:3", "seed": 7},
+        }
+    )
+    workflow = qwen_image_workflow(qwen, [])
+    if (
+        qwen["width"] != 1056
+        or qwen["height"] != 1584
+        or workflow["pos"]["class_type"] != "CLIPTextEncode"
+        or workflow["lat"]["inputs"]["width"] != 1056
+    ):
+        raise RuntimeError("Qwen Image workflow self-test failed")
     if compile_minimax_speech_payload(speech)["voice_setting"]["voice_id"] != "a-preset":
         raise RuntimeError("MiniMax speech self-test failed")
     seedance = compile_seedance_payload(
@@ -1697,8 +2537,8 @@ def main() -> int:
         "provider",
         nargs="?",
         choices=(
-            "seedance", "gpt-image-2", "minimax-music", "minimax-h3",
-            "minimax-speech",
+            "seedance", "gpt-image-2", "qwen-image", "minimax-music",
+            "minimax-h3", "minimax-speech",
         ),
     )
     parser.add_argument("--selftest", action="store_true")
@@ -1715,6 +2555,7 @@ def main() -> int:
         runners = {
             "seedance": _run_seedance,
             "gpt-image-2": _run_openai,
+            "qwen-image": _run_qwen_image,
             "minimax-music": _run_minimax,
             "minimax-h3": _run_minimax_video,
             "minimax-speech": _run_minimax_speech,

@@ -151,7 +151,10 @@ class InFrameLockTests(EpisodeCase):
         listing = {
             shot_id
             for shot_id, body in check._sections(board, "SHOT").items()
-            if "人物「江晨」" in body
+            if ("人物", "江晨") in check._visual_basis(
+                check._fields(body, owner=shot_id, errors=[]).get("视觉依据", ""),
+                shot_id, check._visual_entries((self.episode / "视觉设定.md").read_text(encoding="utf-8"), []), {}, [],
+            ).declared
         }
         self.assertTrue(flagged)
         self.assertLessEqual(flagged, listing)
@@ -247,11 +250,15 @@ class DeliveryGroupTests(EpisodeCase):
         its group was rejected as crossing scenes it never filmed.
         """
 
-        self.edit(
-            "分镜.md",
-            "- 来源：EP001-SC001\n",
-            "- 来源：EP001-SC001「[连续性] 与 EP001-SC002 同一张桌」\n",
+        path = self.episode / "分镜.md"
+        board = path.read_text(encoding="utf-8")
+        board, count = re.subn(
+            r"(- 来源：EP001-SC001[^\n]*)",
+            r"\1「[连续性] 与 EP001-SC002 同一张桌」",
+            board, count=1,
         )
+        self.assertEqual(count, 1)
+        path.write_text(board, encoding="utf-8")
         self.add_group()
         self.assertEqual([e for e in self.errors() if "跨场次" in e], [])
 

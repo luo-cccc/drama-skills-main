@@ -19,11 +19,11 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/zenstory-ai/drama-skills/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/zenstory-ai/drama-skills?style=flat-square&color=22D3EE&logo=github&logoColor=white&label=Stars"></a>
-  <a href="https://github.com/zenstory-ai/drama-skills/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/zenstory-ai/drama-skills?style=flat-square&color=081431&label=Release"></a>
+  <a href="https://github.com/luo-cccc/drama-skills-main/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/luo-cccc/drama-skills-main?style=flat-square&color=22D3EE&logo=github&logoColor=white&label=Stars"></a>
+  <a href="https://github.com/luo-cccc/drama-skills-main/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/luo-cccc/drama-skills-main?style=flat-square&color=081431&label=Release"></a>
   <img alt="Skills 12" src="https://img.shields.io/badge/Skills-12-081431?style=flat-square">
   <a href="https://www.python.org/"><img alt="Python 3.9%2B" src="https://img.shields.io/badge/Python-3.9%2B-3776AB?style=flat-square&logo=python&logoColor=white"></a>
-  <a href="https://github.com/zenstory-ai/drama-skills/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/zenstory-ai/drama-skills/ci.yml?style=flat-square&label=CI"></a>
+  <a href="https://github.com/luo-cccc/drama-skills-main/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/luo-cccc/drama-skills-main/ci.yml?style=flat-square&label=CI"></a>
   <a href="./LICENSE"><img alt="License MIT" src="https://img.shields.io/badge/License-MIT-1F6FEB?style=flat-square"></a>
 </p>
 
@@ -35,6 +35,16 @@
 
 上面这段 68 秒竖屏样片是《让你管账号》第 1 集开头：从一部 20 章的原著改编，分镜 20 镜，逐镜生成后剪成成片，
 字幕、系统面板与音效在剪辑时叠加。视频生成成本约 40 元。
+
+## 最新更新
+
+### 2026-10-30
+
+- 十二个技能统一提供台词专项、导演知识、独立参考图与短剧制作流程。
+- 俯视站位支持拖动保存、冲突恢复和未保存保护；参考图显示完整依赖的过期原因。
+- GPT Image / Qwen Image 图片适配与项目诊断已接通，跨镜对白按实际承载镜长核对。
+
+完整记录见 [更新记录](docs/releases/release-notes.md)。
 
 ## 这是什么
 
@@ -73,7 +83,7 @@ Drama Skills 覆盖 AI 短剧 / 漫剧从点子或原著到成片的全流程：
 前提：你已经在用 Claude Code、Codex 或其他支持 Agent Skill 规范的编程 Agent；下面这条命令需要终端里能运行 `npx`（Node.js）。
 
 ```bash
-npx skills add zenstory-ai/drama-skills -y -g
+npx skills add luo-cccc/drama-skills-main -y -g
 ```
 
 `-g` 全局安装，所有目录可用；去掉 `-g` 则只装到当前目录。**更新时重新执行同一条命令即可。**
@@ -82,14 +92,14 @@ npx skills add zenstory-ai/drama-skills -y -g
 支持导入 GitHub 仓库或 skill 的平台，也可以直接对 Agent 说：
 
 ```
-安装这些技能 https://github.com/zenstory-ai/drama-skills
+安装这些技能 https://github.com/luo-cccc/drama-skills-main
 ```
 
 <details>
 <summary>手动链接（可安装全部，也可只链接需要的技能）</summary>
 
 ```bash
-git clone https://github.com/zenstory-ai/drama-skills.git && cd drama-skills
+git clone https://github.com/luo-cccc/drama-skills-main.git && cd drama-skills-main
 
 # Claude Code
 mkdir -p "$HOME/.claude/skills"
@@ -114,7 +124,7 @@ ClawHub 分发条目由[显式发布清单](.clawhub/publish.json)管理，可�
 调用写法随运行环境而变：Claude Code 用 `/short-drama`，Codex 用 `$short-drama`，
 也可以直接用自然语言说明任务。下文以 `$` 为例，Claude Code 用户按环境改用 `/`。
 
-> 变更见 [CHANGELOG.md](CHANGELOG.md) 与 [Releases](https://github.com/zenstory-ai/drama-skills/releases)；
+> 变更见 [CHANGELOG.md](CHANGELOG.md) 与 [Releases](https://github.com/luo-cccc/drama-skills-main/releases)；
 > 升级既有项目要做什么，见常见问题[「升级到新版本后要做什么」](#升级到新版本后要做什么)。
 
 ## 快速开始
@@ -271,7 +281,7 @@ flowchart LR
 | `short-drama-image-prompts` | Lookdev 风格帧、角色/场景/道具参考板提示词与定点修改说明 |
 | `short-drama-storyboard` | 可选场次视觉计划与 Coverage Audition、原文落实、镜头、边界和冻结关键帧 |
 | `short-drama-video-prompts` | 单镜动作、多人物表演与注意交接、摄影、声音、起止状态、补拍说明，以及跨镜时间线音乐规格 |
-| `short-drama-produce` | 展示有边界的图片/视频/TTS/音乐任务，取得本次明确确认后通过外部 adapter 执行并记录结果；可选支持 Seedance、GPT Image 2、MiniMax H3 视频与 MiniMax Music |
+| `short-drama-produce` | 展示有边界的图片/视频/TTS/音乐任务，取得本次明确确认后通过外部 adapter 执行并记录结果；可选支持 Seedance、GPT Image 2、Qwen Image（APIMart / ComfyUI）、MiniMax H3 视频、Speech 与 Music |
 | `short-drama-edit` | 逐镜素材的可用带、入出点取舍、镜序、台词完整性、字幕与响度，写成剪辑单并渲染成片 |
 | `short-drama-review` | 结构/内容审查、授权生产观察的项目级校准诊断与修订结论 |
 
@@ -287,6 +297,10 @@ flowchart LR
 
 macOS、Linux、WSL 与 Windows 原生都可运行。创作台以 `--detach` 独立进程运行，链接在整个创作期间
 保持有效；`--status` 打印当前链接，`--stop` 关闭。服务只监听本机，项目内容不上传。
+
+结构化站位可以拖动、调整并保存回分镜；保存冲突保留草稿，离开前提示未保存修改。
+参考图视图按当前文件与父图依赖显示过期原因，诊断区分别显示结构问题和资产提示。
+文件齐全只表示资料已具备，不代表结构检查或创作审查已通过。
 
 全部跑完后导出交付：`$short-drama` 用 `project_tool.py export <project> --out <项目外目录>`
 把每集现有的五份创作文档、`剪辑单.md` 和 `制作成果/` 复制成带清单和校验和的交付目录。
@@ -359,6 +373,7 @@ v0.9.1 起，旧的 JSON/JSONL 检查器也已退役，结构核对统一使用 
 
 - 示例：[examples/](examples/)，公开完整样例是 [《让你管账号》EP001](examples/creator-first/EP001/)；其余目录是仓库校验器的回归夹具。
 - [真实产出节选](docs/real-outputs.md)：一镜穿过四份文档、检查器报错、剪辑单与实测、原著快评回填、改编契约、模型行为观察。
+- [从 Shuohao JSON 项目迁移](docs/shuohao-migration.md)：一次性导入大纲、角色、美术、剧本、站位和分镜，并保留迁移待决项。
 - [评估](evaluations/README.md)：按文档实跑一次的完整产物、发布前的回归闸门与主工作流实跑方法。
 - [漫剧创作全流程指引](docs/comic-drama-workflow.md)：把十二个技能按漫剧产线从头串一遍，每步命令、产物与卡点。
 - [跨镜一致性怎么做](docs/character-consistency-across-shots.md)：跨镜、跨集角色一致性，三视图之外的三层文件事实。
@@ -369,13 +384,13 @@ v0.9.1 起，旧的 JSON/JSONL 检查器也已退役，结构核对统一使用 
 ## 交流
 
 - **Telegram 群**：<https://t.me/+CZmsmvWIhb4zZTNl> —— 日常交流、踩坑、用法分享与新功能讨论。
-- **GitHub Issues**：[Bug、输出质量 Case、功能请求](https://github.com/zenstory-ai/drama-skills/issues/new/choose)，请按结构化表单附上复现材料或具体输出。
+- **GitHub Issues**：[Bug、输出质量 Case、功能请求](https://github.com/luo-cccc/drama-skills-main/issues/new/choose)，请按结构化表单附上复现材料或具体输出。
 
 ## 贡献
 
 修改原则与必跑测试见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
-<a href="https://github.com/zenstory-ai/drama-skills/graphs/contributors"><img alt="Contributors" src="https://contrib.rocks/image?repo=zenstory-ai/drama-skills"></a>
+<a href="https://github.com/luo-cccc/drama-skills-main/graphs/contributors"><img alt="Contributors" src="https://contrib.rocks/image?repo=luo-cccc/drama-skills-main"></a>
 
 ## 致谢
 
@@ -388,7 +403,7 @@ v0.9.1 起，旧的 JSON/JSONL 检查器也已退役，结构核对统一使用 
 | 项目 | 用途 |
 | --- | --- |
 | [oh-story-claudecode](https://github.com/zenstory-ai/oh-story-claudecode) | 网文写作 skill 包：扫榜、拆文、写作、去AI味、封面图 |
-| [drama-skills](https://github.com/zenstory-ai/drama-skills) | AI 短剧 / 漫剧创作 skill 合集：剧本、资产、分镜、图片/视频提示词、独立审查（本仓库） |
+| [drama-skills](https://github.com/luo-cccc/drama-skills-main) | AI 短剧 / 漫剧创作 skill 合集：剧本、资产、分镜、图片/视频提示词、独立审查（本仓库） |
 | [novel-to-game](https://github.com/zenstory-ai/novel-to-game) | 面向原著改编、指定运行环境构建与运行证据 QA 的 agent skills |
 | [video-recap-skills](https://github.com/zenstory-ai/video-recap-skills) | 将支持的视频文件制作成中文解说，可选导出可编辑的剪映/CapCut 草稿 |
 | [oh-story-dsh](https://github.com/zenstory-ai/oh-story-dsh) | DeepSeek Harness 社区插件，提供小说、短剧、游戏和视频解说工作台 |

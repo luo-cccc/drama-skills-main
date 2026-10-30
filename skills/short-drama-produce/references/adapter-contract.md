@@ -42,7 +42,9 @@ video and tail-frame inputs; do not omit the source selector to bypass this boun
   canonical `剧集|episodes/<EP>/` creator document, matched to that document:
   `图片提示词.md` takes `IMG-*` (image), `视频提示词.md` takes `MOTION-*` (video),
   and `分镜.md` takes `SHOT-*` (image, whose prompt is the shot's
-  `### 冻结关键帧提示词` body rather than `### 可复制提示词`). A new image/video job using one of these canonical sources must
+  `### 冻结关键帧提示词` body rather than `### 可复制提示词`). A reference-only
+  workspace may instead use root `参考图提示词.md` with one `IMG-*` entry per
+  view. A new image/video job using one of these canonical sources must
   provide the matching selector; an arbitrary Markdown file cannot impersonate a
   creator source. `prepare` selects that section and requires `prompt` to exactly
   equal its copyable prompt after Markdown quote markers are removed.
@@ -92,6 +94,42 @@ video and tail-frame inputs; do not omit the source selector to bypass this boun
   language as the copyable prompt; this execution-only setting is not forwarded as a provider
   request field. Secret-like keys are rejected.
 - `overwrite`: must be explicitly true to replace an existing result.
+
+### Reference-sheet jobs
+
+A character reference image remains one job per view. The anchor is generated
+first; all derived views bind that exact successful output:
+
+```json
+{
+  "production_profile": "reference-sheet",
+  "reference_stage": "derived",
+  "reference_group": "HERO",
+  "reference_view": "face-front",
+  "depends_on_job_id": "REF-HERO-ANCHOR-JOB",
+  "depends_on_output": {
+    "path": "production/reference/HERO/front-full.v1.png",
+    "sha256": "<parent output sha256>"
+  }
+}
+```
+
+- `production_profile` must be `reference-sheet`; the fields above form one
+  closed optional group.
+- `reference_group` is the stable uppercase asset ID; `reference_view` is the
+  lowercase view ID used by the Dashboard version ledger.
+- `reference_stage: anchor` has no dependency and produces exactly one output.
+- `reference_stage: derived` names a successful parent job, binds the parent
+  output in `references`, and produces exactly one output.
+- `prepare`, `confirm` and `run` re-check that the parent job still has the same
+  successful fingerprint and current output bytes. A changed anchor requires a
+  new prepare and explicit confirmation for the affected derived view.
+- `depends_on_output.path` must also appear in `references`; the parent image's
+  labelled `reference_bindings` entry is what tells the adapter which aspect it
+  may control.
+- A successful reference job writes `制作成果/references/index.json` beside the
+  episode outputs, or `production/reference/index.json` in a reference-only
+  workspace. The manifest is derived runtime evidence and is never an authoring source.
 
 `prepare` records internal digests of source/reference bytes and returns the exact confirmation phrase. Callers never
 calculate those digests. A changed input requires prepare and confirmation again.

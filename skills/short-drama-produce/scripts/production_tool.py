@@ -21,7 +21,7 @@ import subprocess
 import sys
 import tempfile
 import uuid
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO
@@ -56,6 +56,16 @@ PUBLIC_ERROR_CATEGORIES = {
     "timeout",
 }
 PUBLIC_ERROR_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,199}")
+REFERENCE_PROFILE = "reference-sheet"
+REFERENCE_STAGES = ("anchor", "derived")
+REFERENCE_JOB_FIELDS = {
+    "production_profile",
+    "reference_stage",
+    "reference_group",
+    "reference_view",
+    "depends_on_job_id",
+    "depends_on_output",
+}
 ALLOWED_JOB_KEYS = {
     "schema_version",
     "job_id",
@@ -69,9 +79,14 @@ ALLOWED_JOB_KEYS = {
     "outputs",
     "parameters",
     "overwrite",
-}
-STORED_EXECUTION_KEYS = ALLOWED_JOB_KEYS | {"inputs"}
+} | REFERENCE_JOB_FIELDS
+STORED_EXECUTION_KEYS = (ALLOWED_JOB_KEYS - REFERENCE_JOB_FIELDS) | {"inputs"}
 STORED_JOB_KEYS = STORED_EXECUTION_KEYS | {"fingerprint", "prepared_at"}
+REFERENCE_STORED_EXECUTION_KEYS = STORED_EXECUTION_KEYS | REFERENCE_JOB_FIELDS
+REFERENCE_STORED_JOB_KEYS = REFERENCE_STORED_EXECUTION_KEYS | {
+    "fingerprint",
+    "prepared_at",
+}
 LEGACY_STORED_EXECUTION_KEYS = STORED_EXECUTION_KEYS - {
     "source_entry",
     "reference_bindings",
@@ -115,6 +130,7 @@ MEDIA_TYPES = {
 CREATOR_SOURCE_NAMES = {
     "图片提示词.md": "image",
     "视频提示词.md": "video",
+    "参考图提示词.md": "image",
     # A shot's frozen keyframe is a producible image and lives nowhere else, so
     # without this the start frame a video job wants to bind has no stage that
     # can render it.
@@ -125,6 +141,7 @@ CREATOR_SOURCE_NAMES = {
 CREATOR_SOURCE_ENTRIES = {
     "图片提示词.md": ("IMG-", r"可复制(?:通用)?提示词", "参考"),
     "视频提示词.md": ("MOTION-", r"可复制(?:通用)?提示词", "输入参考图"),
+    "参考图提示词.md": ("IMG-", r"可复制(?:通用)?提示词", "参考"),
     "分镜.md": ("SHOT-", r"冻结关键帧提示词", "输入参考图"),
 }
 
@@ -293,7 +310,7 @@ def _open_project_input(root: Path, relative: str) -> Iterator[BinaryIO]:
             raise ValueError(f"unsafe job input path: {relative}")
     if not path.resolve().is_relative_to(root):
         raise ValueError(f"job input escapes project root: {relative}")
-    before = path.stat(follow_symlinks=False)
+    before = path.lstat()
     if not stat.S_ISREG(before.st_mode):
         raise ValueError(f"job input is not a regular file: {relative}")
     with path.open("rb") as handle:
@@ -480,7 +497,7 @@ def _metadata_atomic_json(
                     pass
             return
 
-        before = directory.stat(follow_symlinks=False)
+        before = directory.lstat()
         temporary = directory / temporary_name
         try:
             with temporary.open("xb") as handle:
@@ -699,6 +716,8 @@ def _canonical_creator_source_modality(source: str | None) -> str | None:
     if source is None:
         return None
     path = PurePosixPath(source)
+    if len(path.parts) == 1 and path.name == "参考图提示词.md":
+        return "image"
     if (
         len(path.parts) != 3
         or path.parts[0] not in {"剧集", "episodes"}
@@ -1009,6 +1028,96 @@ def _verify_markdown_source(
         raise ValueError("job reference bindings do not match the selected source entry")
 
 
+def _reference_execution_fields(
+    raw: Mapping[str, Any],
+    *,
+    modality: str,
+    source: str | None,
+    source_entry: str | None,
+    references: list[str],
+    outputs: list[str],
+) -> dict[str, Any]:
+    """Validate the optional anchor/derived reference-image job contract."""
+    if not REFERENCE_JOB_FIELDS.intersection(raw):
+        return {}
+    if raw.get("production_profile") != REFERENCE_PROFILE:
+        raise ValueError(
+            f"production_profile must be {REFERENCE_PROFILE!r} when reference fields are used"
+        )
+    stage = raw.get("reference_stage")
+    if stage not in REFERENCE_STAGES:
+        raise ValueError("reference_stage must be anchor or derived")
+    group = raw.get("reference_group")
+    view = raw.get("reference_view")
+    if (
+        not isinstance(group, str)
+        or re.fullmatch(r"[A-Z0-9][A-Z0-9-]{0,79}", group) is None
+    ):
+        raise ValueError("reference_group must be an uppercase portable identifier")
+    if (
+        not isinstance(view, str)
+        or re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", view) is None
+    ):
+        raise ValueError("reference_view must be a lowercase portable identifier")
+    if modality != "image":
+        raise ValueError("reference-sheet jobs must use image modality")
+    if source is None or PurePosixPath(source).name not in {
+        "图片提示词.md",
+        "参考图提示词.md",
+    }:
+        raise ValueError(
+            "reference-sheet jobs must use 图片提示词.md or 参考图提示词.md"
+        )
+    if source_entry is None or not source_entry.startswith("IMG-"):
+        raise ValueError("reference-sheet jobs need one IMG-* source entry")
+    if len(outputs) != 1:
+        raise ValueError("each reference-sheet view needs exactly one output")
+    dependency_id = raw.get("depends_on_job_id")
+    dependency_output = raw.get("depends_on_output")
+    if stage == "anchor":
+        if dependency_id is not None or dependency_output is not None:
+            raise ValueError("an anchor job cannot depend on another reference job")
+        return {
+            "production_profile": REFERENCE_PROFILE,
+            "reference_stage": stage,
+            "reference_group": group,
+            "reference_view": view,
+            "depends_on_job_id": None,
+            "depends_on_output": None,
+        }
+    if not isinstance(dependency_id, str) or JOB_ID_RE.fullmatch(dependency_id) is None:
+        raise ValueError("a derived reference job needs depends_on_job_id")
+    if (
+        not isinstance(dependency_output, Mapping)
+        or set(dependency_output) != {"path", "sha256"}
+    ):
+        raise ValueError("depends_on_output must contain exactly path and sha256")
+    dependency_path = _relative_path(dependency_output.get("path"), output=True)
+    dependency_digest = dependency_output.get("sha256")
+    if (
+        not isinstance(dependency_digest, str)
+        or re.fullmatch(r"[0-9a-f]{64}", dependency_digest) is None
+    ):
+        raise ValueError("depends_on_output sha256 is invalid")
+    if PurePosixPath(dependency_path).suffix.casefold() not in MEDIA_EXTENSIONS["image"]:
+        raise ValueError("depends_on_output must be an image")
+    if dependency_path not in references:
+        raise ValueError(
+            "a derived reference job must bind its parent output in references"
+        )
+    return {
+        "production_profile": REFERENCE_PROFILE,
+        "reference_stage": stage,
+        "reference_group": group,
+        "reference_view": view,
+        "depends_on_job_id": dependency_id,
+        "depends_on_output": {
+            "path": dependency_path,
+            "sha256": dependency_digest,
+        },
+    }
+
+
 def _normalize_job(root: Path, raw: object) -> dict[str, Any]:
     if not isinstance(raw, Mapping) or set(raw) - ALLOWED_JOB_KEYS:
         raise ValueError("job contains unsupported fields")
@@ -1101,6 +1210,25 @@ def _normalize_job(root: Path, raw: object) -> dict[str, Any]:
     input_paths = ([source] if source is not None else []) + references
     if len(set(input_paths)) != len(input_paths):
         raise ValueError("source and references must be unique")
+    reference_fields = _reference_execution_fields(
+        raw,
+        modality=str(modality),
+        source=source,
+        source_entry=source_entry,
+        references=references,
+        outputs=outputs,
+    )
+    if reference_fields:
+        _verify_reference_dependency(
+            root,
+            {
+                "job_id": job_id,
+                "production_profile": reference_fields["production_profile"],
+                "reference_stage": reference_fields["reference_stage"],
+                "depends_on_job_id": reference_fields["depends_on_job_id"],
+                "depends_on_output": reference_fields["depends_on_output"],
+            },
+        )
     input_hashes = {path: _hash_project_file(root, path) for path in input_paths}
     execution = {
         "schema_version": JOB_SCHEMA,
@@ -1116,6 +1244,7 @@ def _normalize_job(root: Path, raw: object) -> dict[str, Any]:
         "parameters": dict(parameters),
         "overwrite": raw.get("overwrite", False),
         "inputs": input_hashes,
+        **reference_fields,
     }
     if not isinstance(execution["overwrite"], bool):
         raise ValueError("overwrite must be a boolean")
@@ -1131,6 +1260,7 @@ def prepare_job(root: Path, job_file: Path) -> dict[str, Any]:
     raw = json.loads(job_file.read_text(encoding="utf-8"))
     job = _normalize_job(root, raw)
     with _project_lock(root):
+        _verify_reference_dependency(root, job)
         if _active_run(root, str(job["job_id"])) is not None:
             raise RuntimeError("this job is already running")
         job_name = f"{_job_key(str(job['job_id']))}.json"
@@ -1150,7 +1280,8 @@ def _validate_stored_job(
         raise ValueError("stored job fields are invalid")
     stored_keys = set(document)
     legacy = stored_keys == LEGACY_STORED_JOB_KEYS
-    if not legacy and stored_keys != STORED_JOB_KEYS:
+    reference = stored_keys == REFERENCE_STORED_JOB_KEYS
+    if not legacy and stored_keys != STORED_JOB_KEYS and not reference:
         raise ValueError("stored job fields are invalid")
     original = document
     document = dict(document)
@@ -1228,6 +1359,15 @@ def _validate_stored_job(
         if PurePosixPath(output).suffix.casefold() not in MEDIA_EXTENSIONS[str(modality)]:
             raise ValueError("stored job output extension is invalid")
         _project_file(root, output)
+    if reference:
+        _reference_execution_fields(
+            document,
+            modality=str(modality),
+            source=source,
+            source_entry=source_entry,
+            references=references,
+            outputs=outputs,
+        )
     parameters = document.get("parameters")
     if (
         not isinstance(parameters, Mapping)
@@ -1250,7 +1390,11 @@ def _validate_stored_job(
         raise ValueError("stored job input hash is invalid")
     fingerprint = document.get("fingerprint")
     execution_keys = (
-        LEGACY_STORED_EXECUTION_KEYS if legacy else STORED_EXECUTION_KEYS
+        LEGACY_STORED_EXECUTION_KEYS
+        if legacy
+        else REFERENCE_STORED_EXECUTION_KEYS
+        if reference
+        else STORED_EXECUTION_KEYS
     )
     execution = {key: original[key] for key in execution_keys}
     if (
@@ -1275,6 +1419,163 @@ def _read_job(root: Path, job_id: str) -> dict[str, Any]:
     return _validate_stored_job(root, document, expected_job_id=job_id)
 
 
+def _verify_reference_dependency(root: Path, job: Mapping[str, Any]) -> None:
+    """Fail closed unless a derived view still has its exact successful parent."""
+    if job.get("production_profile") != REFERENCE_PROFILE:
+        return
+    if job.get("reference_stage") == "anchor":
+        return
+    if job.get("reference_stage") != "derived":
+        raise ValueError("reference job stage is invalid")
+    parent_id = job.get("depends_on_job_id")
+    dependency = job.get("depends_on_output")
+    if (
+        not isinstance(parent_id, str)
+        or JOB_ID_RE.fullmatch(parent_id) is None
+        or parent_id == job.get("job_id")
+        or not isinstance(dependency, Mapping)
+        or set(dependency) != {"path", "sha256"}
+    ):
+        raise ValueError("reference job dependency is invalid")
+    parent = _read_job(root, parent_id)
+    if parent.get("production_profile") != REFERENCE_PROFILE:
+        raise ValueError("reference job parent is not a reference-sheet job")
+    latest = _latest_run(root, parent_id)
+    if (
+        latest is None
+        or latest.get("status") != "succeeded"
+        or latest.get("fingerprint") != parent.get("fingerprint")
+    ):
+        raise ValueError("reference job parent has no current successful output")
+    outputs = _validated_succeeded_outputs(parent, latest)
+    expected_path = str(dependency["path"])
+    expected_digest = str(dependency["sha256"])
+    matching = [entry for entry in outputs if entry[0] == expected_path]
+    if len(matching) != 1 or matching[0][1] != expected_digest:
+        raise ValueError("reference job dependency does not match the parent output")
+    current_digest, _ = _hash_production_output(root, expected_path)
+    if current_digest != expected_digest:
+        raise ValueError("reference job parent output changed after preparation")
+
+
+def _reference_manifest_relative(job: Mapping[str, Any]) -> str:
+    output = PurePosixPath(str(job["outputs"][0]))
+    parts = output.parts
+    if (
+        len(parts) >= 4
+        and parts[0] in {"剧集", "episodes"}
+        and re.fullmatch(r"EP\d{3,}", parts[1], re.IGNORECASE)
+        and parts[2] in {"制作成果", "production"}
+    ):
+        return f"{parts[0]}/{parts[1]}/{parts[2]}/references/index.json"
+    if len(parts) >= 3 and parts[:2] == ("production", "reference"):
+        return "production/reference/index.json"
+    raise ValueError(
+        "reference-sheet outputs must stay under 剧集/<EP>/制作成果/ or production/reference/"
+    )
+
+
+def _reference_version(output: str, previous: object) -> int:
+    match = re.search(r"\.v([0-9]+)\.[^.]+$", PurePosixPath(output).name)
+    if match is not None:
+        return int(match.group(1))
+    if isinstance(previous, int) and previous >= 0:
+        return previous + 1
+    return 1
+
+
+def _write_reference_manifest(
+    root: Path, job: Mapping[str, Any], written: Sequence[Mapping[str, Any]]
+) -> None:
+    if job.get("production_profile") != REFERENCE_PROFILE or len(written) != 1:
+        return
+    relative = _reference_manifest_relative(job)
+    target = _project_file(root, relative, create_parent=True)
+    try:
+        with _open_project_input(root, relative) as handle:
+            existing = json.loads(handle.read().decode("utf-8"))
+    except FileNotFoundError:
+        existing = {}
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+        existing = {}
+    if (
+        not isinstance(existing, Mapping)
+        or existing.get("kind") != "reference_manifest"
+        or existing.get("schema_version") != "1.0"
+    ):
+        existing = {
+            "schema_version": "1.0",
+            "kind": "reference_manifest",
+            "groups": {},
+        }
+    groups = existing.get("groups")
+    groups = dict(groups) if isinstance(groups, Mapping) else {}
+    group_id = str(job["reference_group"])
+    view_id = str(job["reference_view"])
+    group = groups.get(group_id)
+    group = dict(group) if isinstance(group, Mapping) else {"views": {}}
+    views = group.get("views")
+    views = dict(views) if isinstance(views, Mapping) else {}
+    previous = views.get(view_id)
+    previous = dict(previous) if isinstance(previous, Mapping) else {}
+    current = previous.get("current")
+    current = dict(current) if isinstance(current, Mapping) else {}
+    versions = [
+        dict(entry)
+        for entry in previous.get("versions", [])
+        if isinstance(entry, Mapping)
+    ] if isinstance(previous.get("versions"), list) else []
+    if current and current.get("output") != written[0]["path"]:
+        versions.append(current)
+    source = job.get("source")
+    source_hash = (
+        job.get("inputs", {}).get(source)
+        if isinstance(job.get("inputs"), Mapping) and source is not None
+        else None
+    )
+    record = {
+        "job_id": job["job_id"],
+        "stage": job["reference_stage"],
+        "view": view_id,
+        "version": _reference_version(str(written[0]["path"]), current.get("version")),
+        "output": written[0]["path"],
+        "sha256": written[0]["sha256"],
+        "media_type": written[0]["media_type"],
+        "bytes": written[0]["bytes"],
+        "source": source,
+        "source_entry": job.get("source_entry"),
+        "source_sha256": source_hash,
+        "depends_on_job_id": job.get("depends_on_job_id"),
+        "depends_on_output": job.get("depends_on_output"),
+        "created_at": utc_now(),
+    }
+    views[view_id] = {"current": record, "versions": versions}
+    group.update({"id": group_id, "views": views})
+    groups[group_id] = group
+    manifest = {
+        "schema_version": "1.0",
+        "kind": "reference_manifest",
+        "groups": groups,
+    }
+    data = (json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode(
+        "utf-8"
+    )
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{target.name}.", suffix=".tmp", dir=target.parent
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_name, target)
+    finally:
+        try:
+            os.unlink(temporary_name)
+        except FileNotFoundError:
+            pass
+
+
 def _preview(job: Mapping[str, Any]) -> dict[str, Any]:
     confirmation = f"CONFIRM {job['job_id']} {str(job['fingerprint'])[:12]}"
     return {
@@ -1292,6 +1593,11 @@ def _preview(job: Mapping[str, Any]) -> dict[str, Any]:
         "overwrite": job["overwrite"],
         "confirmation": confirmation,
         "state": "needs_confirmation",
+        **{
+            key: job[key]
+            for key in REFERENCE_JOB_FIELDS
+            if key in job
+        },
     }
 
 
@@ -1301,6 +1607,7 @@ def confirm_job(root: Path, *, job_id: str, confirmation: str) -> dict[str, Any]
         if _active_run(root, job_id) is not None:
             raise RuntimeError("this job is already running")
         job = _read_job(root, job_id)
+        _verify_reference_dependency(root, job)
         expected = _preview(job)["confirmation"]
         if confirmation != expected:
             raise ConfirmationRequiredError("confirmation does not match the exact current job")
@@ -1727,6 +2034,7 @@ def run_job(root: Path, *, job_id: str, adapter_config: Path) -> dict[str, Any]:
             if _active_run(root, job_id) is not None:
                 raise RuntimeError("this job is already running")
             job = _read_job(root, job_id)
+            _verify_reference_dependency(root, job)
             command, timeout, roles = _load_adapter(adapter_config, str(job["adapter"]), root)
             _require_adapter_roles(job, roles)
             try:
@@ -1813,6 +2121,7 @@ def run_job(root: Path, *, job_id: str, adapter_config: Path) -> dict[str, Any]:
                 run["status"] = "succeeded"
                 run["finished_at"] = utc_now()
                 run["outputs"] = written
+                _write_reference_manifest(root, job, written)
                 provider_job_id = response.get("provider_job_id") or _read_provider_handle(
                     root, job_id, run_id
                 )
@@ -1925,6 +2234,7 @@ def collect_job(root: Path, *, job_id: str, adapter_config: Path) -> dict[str, A
             collected["provider_job_id"] = provider_job_id
             collected["collected"] = True
             collected.pop("error", None)
+            _write_reference_manifest(root, job, written)
             _write_run(root, job_id, collected)
     return {
         "job_id": job_id,
@@ -1942,6 +2252,22 @@ def job_status(root: Path, *, job_id: str) -> dict[str, Any]:
     latest = _latest_run(root, job_id)
     if not _inputs_current(root, job):
         state = "needs_reconfirmation"
+    else:
+        try:
+            _verify_reference_dependency(root, job)
+        except (FileNotFoundError, ValueError):
+            state = "needs_reconfirmation"
+        else:
+            state = ""
+    if state:
+        return {
+            "job_id": job["job_id"],
+            "modality": job["modality"],
+            "adapter": job["adapter"],
+            "outputs": job["outputs"],
+            "state": state,
+            "latest_run": latest,
+        }
     else:
         try:
             receipt = _metadata_read_json(

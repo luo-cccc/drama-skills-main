@@ -1,4 +1,4 @@
-<!-- Last synced with README.md: 2026-10-27 -->
+<!-- Last synced with README.md: 2026-10-30 -->
 
 <p align="center">
   <img src="https://zenstory.ai/brand/zenstory-ai-mark.svg" alt="" width="76" height="76">
@@ -21,11 +21,11 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/zenstory-ai/drama-skills/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/zenstory-ai/drama-skills?style=flat-square&color=22D3EE&logo=github&logoColor=white&label=Stars"></a>
-  <a href="https://github.com/zenstory-ai/drama-skills/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/zenstory-ai/drama-skills?style=flat-square&color=081431&label=Release"></a>
+  <a href="https://github.com/luo-cccc/drama-skills-main/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/luo-cccc/drama-skills-main?style=flat-square&color=22D3EE&logo=github&logoColor=white&label=Stars"></a>
+  <a href="https://github.com/luo-cccc/drama-skills-main/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/luo-cccc/drama-skills-main?style=flat-square&color=081431&label=Release"></a>
   <img alt="Skills 12" src="https://img.shields.io/badge/Skills-12-081431?style=flat-square">
   <a href="https://www.python.org/"><img alt="Python 3.9%2B" src="https://img.shields.io/badge/Python-3.9%2B-3776AB?style=flat-square&logo=python&logoColor=white"></a>
-  <a href="https://github.com/zenstory-ai/drama-skills/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/zenstory-ai/drama-skills/ci.yml?style=flat-square&label=CI"></a>
+  <a href="https://github.com/luo-cccc/drama-skills-main/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/luo-cccc/drama-skills-main/ci.yml?style=flat-square&label=CI"></a>
   <a href="./LICENSE"><img alt="License MIT" src="https://img.shields.io/badge/License-MIT-1F6FEB?style=flat-square"></a>
 </p>
 
@@ -38,6 +38,16 @@
 The 68-second portrait sample above is the opening of *Let You Run the Account*, EP001: adapted from a 20-chapter
 novel, storyboarded into 20 shots, generated shot by shot and cut into a film, with subtitles, system panels and sound
 effects added in the edit. Video generation cost about ¥40.
+
+## Latest update
+
+### 2026-10-30
+
+- Twelve skills combine focused dialogue, directing guidance, standalone references, and short-drama production.
+- Scene positions support drag-and-save, conflict recovery, and unsaved-change protection; reference expiry follows parent dependencies.
+- GPT Image / Qwen Image adapters and project diagnostics are connected, with shared dialogue budgets across shots.
+
+See the [full update history](docs/releases/release-notes.md) (Chinese).
 
 ## What it is
 
@@ -90,7 +100,7 @@ Prerequisite: you already use Claude Code, Codex or another coding agent that su
 command below needs `npx` (Node.js) in your terminal.
 
 ```bash
-npx skills add zenstory-ai/drama-skills -y -g
+npx skills add luo-cccc/drama-skills-main -y -g
 ```
 
 `-g` installs globally for every directory; drop it to install into the current directory only.
@@ -100,14 +110,14 @@ version first. Cutting a film additionally needs `ffmpeg` / `ffprobe` on PATH.
 You can also just tell your agent (any platform that can import a GitHub repository or skill):
 
 ```
-Install this skill suite: https://github.com/zenstory-ai/drama-skills
+Install this skill suite: https://github.com/luo-cccc/drama-skills-main
 ```
 
 <details>
 <summary>Manual linking (install all skills or only the ones you need)</summary>
 
 ```bash
-git clone https://github.com/zenstory-ai/drama-skills.git && cd drama-skills
+git clone https://github.com/luo-cccc/drama-skills-main.git && cd drama-skills-main
 
 # Claude Code
 mkdir -p "$HOME/.claude/skills"
@@ -134,7 +144,7 @@ Invocation differs by runtime: Claude Code uses `/short-drama`, Codex uses
 `$short-drama`, and you can always drop the prefix and just describe the task in
 plain language. The examples below use `$`; Claude Code users should use `/` for their runtime.
 
-> Changes are in [CHANGELOG.md](CHANGELOG.md) and [Releases](https://github.com/zenstory-ai/drama-skills/releases);
+> Changes are in [CHANGELOG.md](CHANGELOG.md) and [Releases](https://github.com/luo-cccc/drama-skills-main/releases);
 > what to do when upgrading an existing project is in the FAQ entry [What do I do after upgrading?](#what-do-i-do-after-upgrading).
 
 ## Quick start
@@ -304,7 +314,7 @@ flowchart LR
 | `short-drama-image-prompts` | Lookdev style frames, reusable character/location/prop reference prompts, and scoped edits |
 | `short-drama-storyboard` | Optional scene visual plans and Coverage Auditions, source coverage, shots, boundaries, and frozen keyframes |
 | `short-drama-video-prompts` | Single-shot action, multi-actor performance and attention handoffs, camera, sound, start/end states, reshoot notes, and cross-shot timeline-music specs |
-| `short-drama-produce` | Preview a bounded image/video/TTS/music job, require explicit confirmation, execute an external adapter, and record results; optional Seedance, GPT Image 2, MiniMax H3 video, and MiniMax Music profiles are included |
+| `short-drama-produce` | Preview a bounded image/video/TTS/music job, require explicit confirmation, execute an external adapter, and record results; optional Seedance, GPT Image 2, Qwen Image (APIMart / ComfyUI), MiniMax H3 video, Speech, and Music profiles are included |
 | `short-drama-edit` | Usable band per generated clip, in/out points and shot order, dialogue integrity, subtitles and loudness; written as a cut list and rendered into a film |
 | `short-drama-review` | Structural/content review, project-bounded diagnosis from authorized production observations, and revision verdicts |
 
@@ -321,6 +331,11 @@ One line inside your agent (Codex writes `$short-drama dashboard`):
 Runs on macOS, Linux, WSL, and native Windows. It serves with `--detach`, in its own process, so
 the link stays valid for the whole session; `--status` reprints it and `--stop` shuts it down. It listens on the
 local machine only; project content is not uploaded.
+
+Drag and adjust structured scene positions, then save them into the storyboard. Conflicts preserve
+the draft, and leaving warns about unsaved changes. Reference views show expiry from current files
+and parent dependencies; diagnostics separate structural errors from asset notes. Available documents
+do not imply that validation or creative review has passed.
 
 When everything is written, hand it over: `project_tool.py export <project> --out <dir outside the
 project>` copies each episode's existing five creator documents, `剪辑单.md`, and `制作成果/` into one delivery
@@ -424,13 +439,13 @@ such as "001 to 009" is no longer accepted.
 ## Community
 
 - **Telegram**: <https://t.me/+CZmsmvWIhb4zZTNl> — chat, troubleshooting, sharing workflows, and feature discussion.
-- **GitHub Issues**: [bugs, output-quality cases, and feature requests](https://github.com/zenstory-ai/drama-skills/issues/new/choose). Please use the structured form and attach reproduction material or the concrete output.
+- **GitHub Issues**: [bugs, output-quality cases, and feature requests](https://github.com/luo-cccc/drama-skills-main/issues/new/choose). Please use the structured form and attach reproduction material or the concrete output.
 
 ## Contributing
 
 Principles and the required test run are in [CONTRIBUTING.md](CONTRIBUTING.md) (Chinese).
 
-<a href="https://github.com/zenstory-ai/drama-skills/graphs/contributors"><img alt="Contributors" src="https://contrib.rocks/image?repo=zenstory-ai/drama-skills"></a>
+<a href="https://github.com/luo-cccc/drama-skills-main/graphs/contributors"><img alt="Contributors" src="https://contrib.rocks/image?repo=luo-cccc/drama-skills-main"></a>
 
 ## Acknowledgements
 
@@ -443,7 +458,7 @@ This project is maintained by [ZenStory AI](https://zenstory.ai) — open-source
 | Project | What it does |
 | --- | --- |
 | [oh-story-claudecode](https://github.com/zenstory-ai/oh-story-claudecode) | Web-fiction writing skill pack: chart scanning, deconstruction, drafting, de-AI-flavor, covers |
-| [drama-skills](https://github.com/zenstory-ai/drama-skills) | AI short-drama / motion-comic suite: scripts, assets, storyboards, image & video prompts, review (this repo) |
+| [drama-skills](https://github.com/luo-cccc/drama-skills-main) | AI short-drama / motion-comic suite: scripts, assets, storyboards, image & video prompts, review (this repo) |
 | [novel-to-game](https://github.com/zenstory-ai/novel-to-game) | Agent skills for source-grounded novel adaptation, target-runtime builds, and evidence-based QA |
 | [video-recap-skills](https://github.com/zenstory-ai/video-recap-skills) | Create Chinese-narration recaps from supported video files, with optional editable JianYing/CapCut draft export |
 | [oh-story-dsh](https://github.com/zenstory-ai/oh-story-dsh) | Community DeepSeek Harness plugin with novel, short-drama, game and video-recap workbenches |
